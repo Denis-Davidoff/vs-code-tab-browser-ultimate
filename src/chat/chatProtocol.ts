@@ -765,6 +765,12 @@ export interface ChatViewState {
 	readonly entries: readonly ChatEntry[];
 	readonly linkedChats?: readonly { readonly chatId: string; readonly title: string; readonly access: 'read' | 'readWrite'; readonly available: boolean; readonly owned?: boolean; readonly taskState?: string }[];
 	readonly running: boolean;
+	/**
+	 * How many turns of the conversation in front have ended. A Stop reads "Stopping…" until
+	 * this moves: `running` alone cannot say so, since the turn after it can start before the
+	 * next coalesced post and the view then never sees `running` false.
+	 */
+	readonly turnsEnded?: number;
 	readonly attachments: readonly AttachmentChip[];
 	/**
 	 * What could be attached and is not yet: the text editor and the browser tab

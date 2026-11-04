@@ -60,12 +60,13 @@ See the [Privacy Policy](PRIVACY.md) for data handling, storage and provider sha
 
 Choose **Continue in VS Code terminal** from a chat tab's right-click menu or the chat command
 picker, or use the terminal button beside a conversation in **History**. Claude Code,
-Codex and Gemini CLI open in a VS Code editor terminal tab, resuming the saved session
+Codex, Gemini CLI, OpenCode and Pi open in a VS Code editor terminal tab, resuming the saved session
 in its original folder. Finish the running turn and any queued messages first.
 The chat tab closes and remains in history. Repeating the action focuses its existing
 terminal; close that terminal before reopening the conversation in chat.
 The chat transcript does not import messages subsequently written in the terminal.
-The CLI keeps the browser tools and the tab the chat was working on.
+Claude Code and Codex keep the browser tools and the tab the chat was working on; Gemini CLI
+has them after **Connect Gemini CLI**, and OpenCode and Pi start without them.
 
 ## 🧠 Agents in the chat
 
@@ -104,6 +105,10 @@ visible while recording. Files are temporary until saved; agents receive a file 
 For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-video-recording).
 
 ## 📝 Changelog
+
+**0.9.18** — Stop reads "Stopping…" from the click until the turn ends, and a Claude Code turn that does not stop within 4 seconds is ended, resuming on the next message. Swipe sideways over the composer, not only its tab row: a flick moves one tab, a slow drag snaps tab by tab; right-click the tab row to show or hide tabs, and scrolling down over it no longer returns to Chat. Share Tab with OpenCode, Pi or OpenRouter, Connect OpenCode, and Open Google Chrome for any agent, now under Open URL in the status bar menu. Notice cards get a copy button. Fixes: the arrow beside Send no longer pushes Send aside (touch screens only), and "Stopping…" no longer lingers on the turn after a stopped one.
+
+**0.9.17** — Tab labels: right-click a chat tab and choose Add label… to put an emoji before its title. A page pinned to this chat can be inserted with `@`; one pinned to another chat is shown in orange in the browser menu. Swipe sideways over the composer tab row to walk through the tabs. Hover over a quote in a reply to copy it. The Branches search keeps its text for two minutes after the window closes. Notice cards are more compact.
 
 **0.9.16** — Linked chats let one conversation read another, add attributed notes and manage worker chats. The composer's History tab is renamed Conversation. A new Bash tab lists the agents' shell commands, with their output available in the chat or in a read-only terminal, plus experimental process monitoring. While composing, lists continue with Enter and nest with Tab; a line typed with a leading space, or a bare `1` or `a`, stays plain text. Fixes: the Bash tab keeps clicks and focus while a command produces output, hovering over Send no longer closes other popups, and the usage button turns red while credits are being spent.
 
@@ -417,7 +422,7 @@ the editor: the page you are looking at is the page your agent reads and drives.
   `Cmd`/`Ctrl` + `Alt` + `C` both run the action you used last, whichever of the seventeen it was.
 - 🔌 **An MCP server, with nothing to install.** No package, no separate process to babysit: the
   extension starts a local server on activation, and one command configures Claude Code, Codex,
-  Gemini CLI or VS Code's own chat to use it.
+  Gemini CLI, OpenCode or VS Code's own chat to use it.
 - 🤖 **Then the agent drives the page itself.** Nineteen tools: snapshot what is clickable, read
   the html or the text, inspect an element, click, fill fields, scroll, wait for a render,
   screenshot, navigate — then read the console to see what its own change actually did. Reading,

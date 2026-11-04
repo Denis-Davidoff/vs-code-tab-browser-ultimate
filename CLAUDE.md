@@ -854,14 +854,14 @@ Every case above is in [src/setup/argvJson.test.ts](src/setup/argvJson.test.ts).
 on the browser tab is gated on `activeEditor == 'workbench.editor.browser'`, so before this the
 MCP commands had no home outside the command palette — the limitation recorded under
 [The dropdown on the browser tab](#the-dropdown-on-the-browser-tab). The menu holds, in order:
-*Open* (Open URL / Open File), *AI Browser Chat* (New chat / Chat in a new tab / Chat in a new window — the
+*Open* (Open URL in VS Code Tab, Open Google Chrome for your agent — moved up under it on request — and Open File in VS Code Tab; renamed so the two read apart from Chrome), *AI Browser Chat* (New chat / Chat in a new tab / Chat in a new window — the
 three places the chat's own New Chat offers, through `aiBrowser.chat.newChat` with a location
 argument; "here" reveals the side bar chat first, since a new tab in a hidden view reads as
 nothing happening; left out below VS Code 1.106), *Page* (Translate page…, only while any browser tab is open — not
 gated on focus: the row names the tab the command will take, and the command asks only when none
 can be told apart), *Setup* (the enable entry
 while it is relevant), *External agents — our MCP tools for their extensions and terminal CLIs* (Connect your
-agent, Open Google Chrome for your agent, Check Connection: the two groups were asked for, so the
+agent, Check Connection: the two groups were asked for, so the
 chat's own entries and the ones for outside agents read apart), *Logins and passkeys*, *Shared tabs*, then Settings. The
 dropdown carries the same Translate entry as `2_translate`; the two are one list to a user, so a
 change to one is a change to both.
@@ -1267,7 +1267,7 @@ ungranted default, to a URL prompt and the webview panel from a row that says "N
 panel. For the same reason the command is **hidden from the palette** (`commandPalette`,
 `when: false`): on a panel host such as Cursor a palette title promising a new browser tab would
 load the address into the one existing panel instead (breaks-silently #74). The status bar
-menu's `Open URL…` is the palette-independent route to a page.
+menu's `Open URL in VS Code Tab…` is the palette-independent route to a page.
 
 **Nesting is possible, and the rule that permits it is worth knowing before adding a third
 level.** `menusExtensionPoint` looks the target menu up in the built-in table first and falls
@@ -3640,12 +3640,20 @@ Google Chrome; `aiBrowser.openInChrome` (palette, optional URL) does the second.
   opened through us fires `onDidChangeActive`, and the controller records it as `_lastTab`, the
   tab the user last turned to. `navigate(newTab)` opens in the browser the caller was already in.
   A Chrome tab counts as on screen (`onScreen`), being a window of its own.
-- **The status bar menu has "Open Google Chrome for your agent"**, beside "Connect your agent" —
-  one row each, the agent (Claude Code, Codex, Gemini CLI) picked in a second QuickPick (asked for:
+- **The status bar menu has "Open Google Chrome for your agent"**, directly under "Open URL in VS Code Tab…" at the
+  top (asked for; it was beside "Connect your agent") — one row, the agent picked in a second QuickPick (asked for:
   three rows apiece made the Assistants section the longest in the menu). Asked for first,
   under *Assistants*): `aiBrowser.openChromeForAssistant` (not in `contributes.commands`; only the
   menu runs it) opens a Chrome tab and puts a prompt on the clipboard naming it by our tab id, with
-  a `browser_select_tab` call to fix the tools on it, behind the paste modal.
+  a `browser_select_tab` call to fix the tools on it, behind the paste modal. **Every supported
+  agent is offered** (asked for — the list was three): the same `availableAgents` as Connect your
+  agent, so Pi and OpenRouter only from VS Code 1.106. Those two live in the AI Browser chat only, so
+  for them a chat with that agent is opened (`chat.newChat('here', agent)`) to paste into; the
+  prompt's "no tools" line differs per agent (Connect …, OpenCode's terminal, or the MCP setting).
+  **Keep agent lists in step**: when an agent is added, sweep user-facing strings ("Claude Code,
+  Codex and …"), the Share Tab commands (`shareWithOtherAgentCommands` in `extension.ts`, the
+  status bar's "Give this tab to …" rows, the "Other agents" submenu) and this menu — a sweep on
+  2026-11-04 found eleven lists that had stopped at three agents.
 - **No Chrome installed** (`ChromeNotInstalledError`) is a warning with **Install Google Chrome**,
   which opens `https://www.google.com/chrome/` — asked for. A notification, because it is a
   decision (see [A notification pauses the built-in browser](#a-notification-pauses-the-built-in-browser)).
@@ -4838,7 +4846,7 @@ from their shipped webviews — Claude Code 2.1.301 (`webview/index.css`, CSS mo
 | composer | Codex surface, Claude Code focus ring | 12 px radius, soft shadow, accent ring on focus, round send button in the foreground colour |
 | pills and menus | both | agent and model are ghost pills opening in-view menus (label, description, check), not native `<select>`s |
 | code blocks | both | header with the language — in the chart yellow, bold (asked for) — and a copy button; the code a little brighter than the prose, mixed towards white on a dark theme and towards black on a light one (`body.vscode-dark` / `vscode-light`; high contrast keeps its own) |
-| quotes | asked for | `6px 14px` inside, a 3 px left border in the chart yellow, text at 88 % of the foreground; consecutive `>` lines are **one** blockquote, a bare `>` a paragraph break — each line used to be a blockquote of its own, which padding turned into a stack of boxes; a quote with no text (a lone `>` while a reply streams) draws nothing; a copy button at its top right on hover copies the quote's text (paragraphs, not the `>`), and the edge rules use `p:first-of-type` / `p:last-of-type` so the button is not their last child (#392) |
+| quotes | asked for | `6px 14px` inside, a 3 px left border in the chart yellow, text at 88 % of the foreground; consecutive `>` lines are **one** blockquote, a bare `>` a paragraph break — each line used to be a blockquote of its own, which padding turned into a stack of boxes; a quote with no text (a lone `>` while a reply streams) draws nothing; a copy button at its bottom right on hover (`corner-copy`, asked for) copies the quote's text (paragraphs, not the `>`), and the edge rules use `p:first-of-type` / `p:last-of-type` so the button is not their last child (#392) |
 | running a shell block | asked for | a code block fenced as `bash`, `sh`, `zsh`, `shell`, `console`, `fish`, `powershell`, `cmd` … gets a terminal button left of Copy on hover (`runInTerminalButton`, `shellLangs`); a menu asks where — VS Code's active terminal (a new one in the conversation's folder if none), a running chat terminal tab, or a new one — and `_runInTerminal` types the block with Enter (lines as `\r` in a tab, `sendText` in VS Code's). The click is the consent, no card; refused where `_blocked()` is; `runInTerminal` is editor-only in `commands.ts` |
 | copying a message | asked for | a copy button at the bottom right of every prompt and reply, on hover (`.message-copy`); a reply copies as its Markdown; the prompt's copy does not fold the prompt |
 | spacing | asked for | rows `--row-pad` (10px) apart above and below — 6px at first, widened on request twice; the timeline's dot and line are placed from the same variable, so change only it — and 20px between turns — none after a turn that holds only its prompt, so messages added during a turn sit 22px apart rather than 42 (asked for); in a reply, paragraphs, lists, quotes, code blocks and tables 0.9em apart |
@@ -6543,8 +6551,8 @@ toolbar; at most 30, prompts up to 20 000 characters.
   a child of `.composer`, shown by `.skills-mode`; the choice is `composerTab` in the webview's
   `setState`, so every `vscode.setState` call must carry it (a test sandbox defines it too).
 - **The message box stays under every composer tab, whole** (asked for): Skills, Activity, Conversation, Bash, GitHub and Files are panels above the full composer — chips, suggestions and every button, as on the Chat tab. It used to be cut to one line there, chips hidden.
-- **Scrolling down over the composer tab row switches to Chat** (a vertical wheel, any other tab in front); the row is `overflow-y: hidden`, or the active underline's 1 px overflow made it jump on a wheel. **A sideways swipe over it walks the tabs** (asked for): one visible tab per 60 px of `deltaX`, in the row's own order, so a long swipe goes on to the first or last tab and stops there; 250 ms without events or a change of direction starts the count over. It takes the row's own sideways scroll (`preventDefault`), and the new tab is scrolled into view. Wheel only — a touch drag still scrolls the row.
-- **Which composer tabs are shown is a per-device choice** (Chat Settings → Appearance → Composer tabs, `localStorage` `aiBrowser.chat.composerTabsHidden`, all shown by default): Skills, Activity, Conversation, Bash, Files and GitHub can be switched off; Chat cannot be hidden. With every other tab off the whole tab row goes, Chat's title with it. Hiding the open tab returns to Chat, and its Alt+letter key does nothing.
+- **Scrolling down over the composer tab row does nothing** — it used to switch to Chat, and was removed on request after it kept firing inside sideways swipes; the row is `overflow-y: hidden`, or the active underline's 1 px overflow made it jump on a wheel. **A sideways swipe over it, or over the composer below it, walks the tabs** (asked for): fingers moving right go to the tab on the right (with natural scrolling that is a negative `deltaX`), left to the left, in the row's own order, stopping at the first or last; over the composer an element inside that can still scroll sideways in that direction (`scrollsSideways`: a long code line, a diff) keeps the gesture. The decisions are a leaf under test, [preview-src/composerSwipe.ts](preview-src/composerSwipe.ts); a gesture ends after 200 ms without events (`swipeGapMs`). **A fast flick moves exactly one tab** (asked for): a delta of 24 px or more, or 0.6 px/ms over the last 80 ms, steps at 28 px and then swallows the rest of the gesture and its momentum tail (a lockout of 350 ms, extended while events keep coming, covers a tail that resumes after a short gap) — the first version (one event's size, counted per gesture) either stepped twice or never. **But the lock must not outlive the tail**, which the second version did: extended by every event, it held as long as wheel events kept coming, so a second flick made before the tail went quiet was swallowed whole, and slow mode never came back. A tail only fades, so inside the lock a delta of 24 px or more that is over twice the previous one, or that turns the other way, is a new flick (120 ms after the step at the earliest) and steps again; and once the tail falls to 2 px the lock ends, so a slow drag can follow at once. **For 1.5 s after a consumed swipe event the next gesture is claimed wherever the pointer is** (`composerSwipedAt`): a step changes the composer's height and leaves the pointer over the thread, and the next flick then went nowhere until the pointer was moved back. Only a sideways gesture is consumed, so a vertical scroll of the thread still scrolls. **A slow drag works like a magnet** (asked for): the active tab's underline is pulled up to 12 px towards the next tab (`--swipe-pull`, none under reduced motion), the tab snaps at 56 px, and holds 220 ms before the next step can arm, so a slow drag walks on tab by tab without skipping. **The axis is decided on the first 6 px of movement**, sideways only if |dx| ≥ |dy| summed over them, never from one event: a vertical scroll drifting sideways does not walk the tabs, and a diagonal start of a sideways swipe no longer reads as "scroll down". **The gesture is claimed where it starts and followed on `document`** (capture listener): a step animates the composer's height, so the rest of the gesture landed on the thread and was lost. It takes the default (`preventDefault`), and the new tab is scrolled into view. Wheel only — a touch drag still scrolls the row.
+- **Which composer tabs are shown is a per-device choice** (Chat Settings → Appearance → Composer tabs, `localStorage` `aiBrowser.chat.composerTabsHidden`, all shown by default): Skills, Activity, Conversation, Bash, Files and GitHub can be switched off; Chat cannot be hidden. With every other tab off the whole tab row goes, Chat's title with it. Hiding the open tab returns to Chat, and its Alt+letter key does nothing. **A right-click anywhere on the tab row**, the empty space to its right included, opens the same choice as a menu (`openComposerTabsMenu`): every tab in the row's order with a check, Chat disabled ("Always shown"); a row toggles through `setComposerTabShown` and **stays open, its check redrawn in place** (`MenuItem.toggle`), so several can be changed in a row — closing and reopening it made it blink. It opens **at the pointer**, hung from a fixed zero-size `pointerAnchor` placed at the click, so it neither sits at the row's left edge nor moves when the row changes width. With every other tab hidden the row is gone, and only Chat Settings brings them back.
 - **Activity and Conversation are composer tabs too** (asked for): Activity is one scrolling list in the
   box's place (`.composer-list`) with two sections, Agents then Access (`.cl-section`); Conversation lists
   this chat's own messages, newest first (`renderComposerHistory`, from `state.entries`); a click
@@ -6945,6 +6953,19 @@ disposed a Claude backend *before* announcing it; it now announces first. A chat
 history is `settled` as well, so one saved mid-turn by an earlier build opens with nothing
 running. And a send that settles after its chat was **deleted** does not save it back: the send can
 take seconds on a cold app-server, and the save wrote the deleted prompt into the history again.
+
+**Stop is bounded, and shown at once.** The button reads "Stopping…" (pulsing) from the click
+until the state says the turn ended (`requestStop` in `chat.ts`; a state post for another tab
+in front clears it). "Ended" is `turnsEnded` moving (`ChatTab.turnsEnded`, counted on every
+`turnEnd`), not `running` going false: a message sent during the stopped turn starts its own
+turn within milliseconds, the 40 ms coalesced post then never carries `running: false`, and the
+follow-up turn read "Stopping…" for its whole length. `ClaudeSession.stop` ends the process when an acknowledged interrupt
+has not ended the turn `stopGraceMs` (4 s) later — `--resume` brings the conversation back.
+Reported as "Stop works, with a delay", and not reproduced: the real CLI ended the turn 6–400 ms
+after the interrupt while thinking, compacting, with Ultracode and resuming a 167 MB session, and
+a VSCodium carrying the user's 12 MB history stopped 60–70 ms after the click. The two guards
+make a slow end visible and finite whatever its cause. Checked against a fake CLI that answers
+the interrupt and never ends the turn: "Stopped." 4.0 s after Stop.
 
 **Stop applies to the turn it was pressed during, not to the queue behind it.** Measured on
 Claude Code: the interrupt is acknowledged at once, the interrupted turn ends
@@ -7556,7 +7577,12 @@ into the wrong one, or with nobody watching:
   closing the tab, the view, a replaced backend: the save came first, and the history lacked a
   message the resumed session had.
 
-**A notice card (`.row.rich-notice`) is padded `7px 12px`**, less above and below than at the sides (asked for): the text's line height adds the rest, so the space reads even. `preview-src/richSmoke.ts` checks that value.
+**A notice card (`.row.rich-notice`) is padded `7px 12px`**, less above and below than at the sides (asked for): the text's line height adds the rest, so the space reads even. Its time is drawn **outside** the card, under its bottom-right corner (`.rich-notice-time`, absolutely placed against the row, which keeps 22px of margin below for it; asked for). `preview-src/richSmoke.ts` checks both. A copy button at the card's bottom right, on hover (`corner-copy` in `richViews.ts`, asked for), copies the notice's text and reason only — not its time or its action buttons.
+
+**The send-options chevron beside Send shows only where there is no hover** (`@media (hover: none)`,
+`.ghost.round.send-options`): a pointer opens the send menu by hovering Send (or ↑/↓ on it), and
+the chevron there pushed Send left in a 58 px slot — reported as a bug. A touch screen (the
+Exchange website on a phone) cannot hover, so it keeps the chevron.
 
 ### Lists and links while composing
 
@@ -10884,6 +10910,10 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
 560. **A starting process that a Stop or an exit meets** → Pi's Stop during startup left the prompt pending (no `turnEnd`),
      its exit during startup reported twice, and `dispose` left the starting process running. A session's start is a state
      of its own: Stop ends the turn, an exit is reported once, dispose ends the process in its handshake.
+
+561. **An acknowledged interrupt taken for a stop** → a CLI can answer `interrupt` with success
+     and go on with the turn, and nothing then ended it: the button stayed Stop and read as a click
+     that did nothing. Bound it (`stopGraceMs`, then end the process) and show the press at once.
 
 ## Special cases and non-obvious decisions
 

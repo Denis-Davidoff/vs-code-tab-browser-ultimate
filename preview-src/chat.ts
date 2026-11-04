@@ -71,6 +71,7 @@ import type { ChatSound, ChatSoundSettings } from '../src/chat/chatProtocol';
 import { chatSoundLabels, playChatSound, unlockChatSound } from './chatSound';
 unlockChatSound(document);
 import { baseName, searchPaths } from './fileRank';
+import { ComposerSwipe, swipeGapMs } from './composerSwipe';
 import { controlOf, connectionPermissionGroups, readConnectionPermissions, type ConnectionPermission, type Availability } from '../src/chat/core/commands';
 import { chatConnectionsEnabled } from '../src/chat/core/chatFeatures';
 import { describePrice, formatContext, modelFromCatalogItem, modelSummary, parseOptionalNumber } from '../src/chat/openrouterView';
@@ -311,10 +312,6 @@ contextButton.hidden = true;
 const sendButton = button([icon('arrow-up')], { class: 'send', title: 'Send' });
 sendButton.setAttribute('aria-haspopup', 'menu');
 sendButton.setAttribute('aria-expanded', 'false');
-const sendOptionsButton = button([icon('chevron-down')], { class: 'ghost round send-options', title: 'Send options' });
-sendOptionsButton.setAttribute('aria-label', 'Send options');
-sendOptionsButton.setAttribute('aria-haspopup', 'menu');
-sendOptionsButton.setAttribute('aria-expanded', 'false');
 let sendMenuOpenTimer: ReturnType<typeof setTimeout> | undefined;
 let sendMenuCloseTimer: ReturnType<typeof setTimeout> | undefined;
 let sendMenuShape = '';
@@ -322,6 +319,11 @@ let sendMenuShape = '';
 const approveToggle = button([], { class: 'pill approve-toggle' });
 
 // Narrow composers keep one row, with the same selectors behind one summary.
+// Touch only (no hover, see chat.css): a pointer opens the send menu by hovering Send.
+const sendOptionsButton = button([icon('chevron-down')], { class: 'ghost round send-options', title: 'Send options' });
+sendOptionsButton.setAttribute('aria-label', 'Send options');
+sendOptionsButton.setAttribute('aria-haspopup', 'menu');
+sendOptionsButton.setAttribute('aria-expanded', 'false');
 const compactSelectorLabel = el('span', { class: 'compact-selector-label' });
 const compactEffortDot = el('span', { class: 'effort compact-effort-dot' });
 compactEffortDot.setAttribute('aria-hidden', 'true');
@@ -664,6 +666,45 @@ function setComposerTabShown(tab: ComposerTab, shown: boolean): void {
 	if (!shown && composerTab === tab) { setComposerTab('chat'); }
 }
 applyComposerTabVisibility();
+/**
+ * A zero-size point at the pointer, fixed in the viewport, for menus that open where the click was:
+ * the menu stays put while the row under it changes width, which an anchor on the row did not.
+ */
+const pointerAnchor = el('span', { class: 'pointer-anchor' });
+pointerAnchor.setAttribute('aria-hidden', 'true');
+/**
+ * A right-click anywhere on the tab row, the empty space to its right included, lists the
+ * tabs with a check each; a row toggles that tab, the same setting as Chat Settings →
+ * Appearance → Composer tabs. The menu stays open and redraws the row's check after each
+ * toggle, so several can be changed in a row. Chat cannot be hidden and is shown disabled.
+ */
+function openComposerTabsMenu(x: number, y: number): void {
+	const names: [ComposerTab, string][] = [['chat', 'Chat'], ...optionalComposerTabs];
+	const order = [...composerTabs.children];
+	names.sort((a, b) => order.indexOf(composerTabButtons[a[0]]) - order.indexOf(composerTabButtons[b[0]]));
+	if (!pointerAnchor.isConnected) { app.append(pointerAnchor); }
+	pointerAnchor.style.left = `${x}px`;
+	pointerAnchor.style.top = `${y}px`;
+	// Always a fresh opening at the new point, never the toggle-closed of a second press.
+	pointerAnchor.classList.remove('active');
+	openMenu(pointerAnchor, names.map(([tab, label]) => ({
+		label,
+		checked: composerTabShown(tab),
+		disabled: tab === 'chat',
+		...(tab === 'chat' ? { description: 'Always shown' } : {}),
+		run: () => undefined,
+		toggle: () => {
+			setComposerTabShown(tab, !composerTabShown(tab));
+			if (composerTabs.hidden) { closePopups(); }
+			return composerTabShown(tab);
+		},
+	})), 'Composer tabs');
+}
+composerTabs.addEventListener('contextmenu', event => {
+	event.preventDefault();
+	event.stopPropagation();
+	openComposerTabsMenu(event.clientX, event.clientY);
+});
 /** Right of the tabs: the list under a tab other than Chat takes the most height it may, and back. */
 const composerMaximize = el('button', { class: 'composer-maximize ghost' }, icon('screen-full'));
 composerTabs.append(composerMaximize);
@@ -794,39 +835,72 @@ let composerAccessShape = '';
 let composerAgentsShape = '';
 let composerHistoryShape = '';
 const touchPointer = window.matchMedia('(pointer: coarse)');
-// Scrolling down over the tab row folds a panel back to Chat (asked for). A sideways swipe
-// walks the tabs left or right, one tab per `composerSwipeStep` pixels, so a long swipe goes
-// on to the first or last tab and stops there; a pause or a change of direction starts over.
-const composerSwipeStep = 60;
-const composerSwipeGapMs = 250;
-let composerSwipe = 0;
-let composerSwipeAt = 0;
-composerTabs.addEventListener('wheel', event => {
-	const sideways = Math.abs(event.deltaX) > Math.abs(event.deltaY);
-	if (!sideways) {
-		if (event.deltaY > 0 && composerTab !== 'chat') {
-			event.preventDefault();
-			setComposerTab('chat');
-		}
-		return;
-	}
-	event.preventDefault();
+// A sideways swipe over the tab row or over the composer below it walks the tabs: fingers
+// moving right go to the tab on the right, left to the left (asked for). The decisions live in
+// `composerSwipe.ts`: a fast flick moves exactly one tab and swallows its momentum tail, a slow
+// drag works like a magnet — it pulls the active tab's underline, snaps to the next tab past a
+// threshold and holds there a moment before it can step again. Over the composer, something
+// inside that can itself scroll sideways in that direction (a long code line, a diff) keeps the
+// gesture. Scrolling down over the row no longer folds a panel back to Chat (removed on request).
+// The gesture is claimed where it starts and followed on `document`: a step changes the
+// composer's height, and the rest of the gesture would otherwise land on the thread.
+const composerSwipe = new ComposerSwipe();
+let composerWheelAt = -Infinity;
+let composerSwipeOwned = false;
+/** When the last swipe event was consumed: a step moves the composer out from under the pointer. */
+let composerSwipedAt = -Infinity;
+const composerSwipeStickyMs = 1500;
+let composerPullReset: ReturnType<typeof setTimeout> | undefined;
+document.addEventListener('wheel', event => {
 	const now = event.timeStamp;
-	if (now - composerSwipeAt > composerSwipeGapMs || Math.sign(event.deltaX) !== Math.sign(composerSwipe)) { composerSwipe = 0; }
-	composerSwipeAt = now;
-	composerSwipe += event.deltaX;
-	while (Math.abs(composerSwipe) >= composerSwipeStep) {
-		const step = composerSwipe > 0 ? 1 : -1;
-		composerSwipe -= step * composerSwipeStep;
-		const order = [...composerTabs.children].filter((b): b is HTMLButtonElement => b instanceof HTMLButtonElement && b.classList.contains('composer-tab') && !b.hidden);
-		const names = order.map(b => (Object.keys(composerTabButtons) as ComposerTab[]).find(k => composerTabButtons[k] === b)!);
-		const at = names.indexOf(composerTab);
-		const next = names[Math.min(names.length - 1, Math.max(0, at + step))];
-		if (!next || next === composerTab) { composerSwipe = 0; break; }
-		setComposerTab(next);
-		composerTabButtons[next].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+	if (now - composerWheelAt > swipeGapMs) {
+		const target = event.target instanceof Element ? event.target : null;
+		// Right after a swipe the next gesture is offered to it wherever the pointer now is (a step
+		// changes the composer's height); only a sideways one is consumed, so scrolling still works.
+		const recent = now - composerSwipedAt < composerSwipeStickyMs;
+		composerSwipeOwned = !!target && !composerTabs.hidden && (composerTabs.contains(target)
+			|| (composer.contains(target) && !scrollsSideways(target, event.deltaX, composer))
+			|| (recent && !scrollsSideways(target, event.deltaX, document.body)));
 	}
-}, { passive: false });
+	composerWheelAt = now;
+	if (!composerSwipeOwned) { return; }
+	const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 400 : 1;
+	const result = composerSwipe.feed(event.deltaX * scale, event.deltaY * scale, now);
+	if (!result.consume) { return; }
+	event.preventDefault();
+	composerSwipedAt = now;
+	setComposerPull(result.pull);
+	if (result.step && !composerSwipeStep(result.step)) { composerSwipe.blocked(); setComposerPull(0); }
+}, { capture: true, passive: false });
+
+function setComposerPull(pull: number): void {
+	composerTabs.style.setProperty('--swipe-pull', reducedMotion.matches ? '0' : pull.toFixed(3));
+	clearTimeout(composerPullReset);
+	if (pull) { composerPullReset = setTimeout(() => composerTabs.style.setProperty('--swipe-pull', '0'), swipeGapMs + 40); }
+}
+
+/** Moves to the visible tab `step` places along; false when there is none that way. */
+function composerSwipeStep(step: -1 | 1): boolean {
+	const order = [...composerTabs.children].filter((b): b is HTMLButtonElement => b instanceof HTMLButtonElement && b.classList.contains('composer-tab') && !b.hidden);
+	const names = order.map(b => (Object.keys(composerTabButtons) as ComposerTab[]).find(k => composerTabButtons[k] === b)!);
+	const next = names[names.indexOf(composerTab) + step];
+	if (!next) { return false; }
+	setComposerTab(next);
+	composerTabButtons[next].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+	return true;
+}
+
+/** Whether an element between `target` and `boundary` can still scroll by `dx` sideways. */
+function scrollsSideways(target: EventTarget | null, dx: number, boundary: HTMLElement): boolean {
+	for (let node = target instanceof Element ? target : null; node && node !== boundary; node = node.parentElement) {
+		if (node.scrollWidth <= node.clientWidth + 1) { continue; }
+		const overflow = getComputedStyle(node).overflowX;
+		if (overflow !== 'auto' && overflow !== 'scroll') { continue; }
+		const max = node.scrollWidth - node.clientWidth;
+		if (dx > 0 ? node.scrollLeft < max - 1 : node.scrollLeft > 1) { return true; }
+	}
+	return false;
+}
 
 function setComposerTab(tab: ComposerTab, save = true): void {
 	const animate = save && tab !== composerTab && !reducedMotion.matches;
@@ -5149,7 +5223,7 @@ function welcome(s: ChatViewState): HTMLElement {
 	box.append(lead);
 	box.append(el('div', { class: 'welcome-hint', text: available.length
 		? `Ask ${available.map(a => a.name).join(' or ')} below. Use + to attach a screenshot, an element or the page address.`
-		: s.detecting ? 'Looking for Claude Code, Codex and Gemini CLI…' : 'No agent is available yet.' }));
+		: s.detecting ? 'Looking for Claude Code, Codex, Gemini CLI, OpenCode, Pi and OpenRouter…' : 'No agent is available yet.' }));
 	for (const agent of s.agents.filter(a => a.id !== 'openrouter' && !a.available && a.problem)) {
 		box.append(el('div', { class: 'welcome-problem', text: `${agent.name}: ${agent.problem}` }));
 	}
@@ -6642,7 +6716,9 @@ function renderMarkdown(text: string): DocumentFragment {
 			// A lone `>` — a reply still streaming its first quoted word — is no box yet.
 			if (q.childElementCount) {
 				// Quotes carry things worth copying (a finding, a source) — a copy button on hover.
-				q.append(copyButton(() => [...q.querySelectorAll('p')].map(p => p.innerText).join('\n\n'), 'Copy quote'));
+				const copy = copyButton(() => [...q.querySelectorAll('p')].map(p => p.innerText).join('\n\n'), 'Copy quote');
+				copy.classList.add('corner-copy');
+				q.append(copy);
 				out.append(q);
 			}
 			continue;
@@ -7588,7 +7664,7 @@ function renderSelectors(s: ChatViewState): void {
 	const agent = s.agents.find(a => a.id === s.selection.agent);
 	setPill(agentPill, agent?.name ?? (s.detecting ? 'Looking…' : 'No agent'));
 	agentPill.disabled = !s.agents.some(a => a.available);
-	agentPill.title = `Agent — who answers: Claude Code, Codex or Gemini CLI${agent?.detail ? `\n${agent.name} ${agent.detail}` : ''}\nClick to pick another; the gear in its menu picks which installed copy.`;
+	agentPill.title = `Agent — who answers: Claude Code, Codex, Gemini CLI, OpenCode, Pi or OpenRouter${agent?.detail ? `\n${agent.name} ${agent.detail}` : ''}\nClick to pick another; the gear in its menu picks which installed copy.`;
 
 	const model = agent?.models.find(m => m.id === s.selection.model);
 	setPill(modelPill, model?.label ?? 'Model');
@@ -7767,17 +7843,28 @@ contextButton.addEventListener('click', () => {
 	no.focus();
 });
 
+/**
+ * The tab a Stop was pressed in and how many of its turns had ended then; see `requestStop`.
+ * It goes when that count moves, not only on `running` false: the turn after a stopped one
+ * (a message sent during it) can start before the next coalesced post, and `running` never
+ * reads false in the view.
+ */
+let stopRequested: { tab: string | undefined; turnsEnded: number | undefined } | undefined;
 function renderSend(): void {
 	const running = state?.running ?? false;
 	const hasContent = !!input.value.trim() || !!state?.attachments.some(chip => !isPinChip(chip));
 	const stop = running;
+	if (!stop || stopRequested?.tab !== state?.activeTab
+		|| (stopRequested?.turnsEnded !== undefined && state?.turnsEnded !== stopRequested.turnsEnded)) { stopRequested = undefined; }
+	const stopping = !!stopRequested;
 	setIcon(sendButton, stop ? 'debug-stop' : 'arrow-up');
+	sendButton.classList.toggle('stopping', stopping);
 	const queueKey = `${navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl+'}Enter`;
-	sendButton.title = stop ? 'Stop — end what the agent is doing now'
+	sendButton.title = stopping ? 'Stopping…' : stop ? 'Stop — end what the agent is doing now'
 		: !canSend() ? 'No agent is available'
 		: running ? `Add to the running turn (Enter outside lists) — the agent takes it into what it is doing. ${queueKey} queues it for when the turn ends instead.`
 		: 'Send (Enter outside lists) — Shift+Enter starts a new line; Enter in a list adds an item';
-	sendButton.setAttribute('aria-label', stop ? 'Stop' : 'Send');
+	sendButton.setAttribute('aria-label', stopping ? 'Stopping' : stop ? 'Stop' : 'Send');
 	sendButton.classList.toggle('stop', stop);
 	sendButton.disabled = !stop && (!hasContent || !canSend());
 	sendOptionsButton.disabled = sendButton.disabled;
@@ -8102,10 +8189,21 @@ input.addEventListener('keydown', event => {
 	}
 });
 
+/**
+ * Stop, shown at once: the button reads "Stopping…" from the click until the
+ * state says the turn has ended, so a slow end never reads as a click that
+ * did nothing (the host also ends a CLI that does not stop, `stopGraceMs`).
+ */
+function requestStop(): void {
+	stopRequested = { tab: state?.activeTab, turnsEnded: state?.turnsEnded };
+	post({ type: 'stop' });
+	renderSend();
+}
+
 sendButton.addEventListener('click', () => {
 	closeSendMenu();
 	if (sendButton.classList.contains('stop')) {
-		post({ type: 'stop' });
+		requestStop();
 	} else {
 		send();
 	}
@@ -8114,7 +8212,7 @@ function sendMenuItems(): MenuItem[] {
 	const mod = navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl+';
 	const hasContent = !!input.value.trim() || !!state?.attachments.some(chip => !isPinChip(chip));
 	return [
-		...(state?.running ? [{ icon: 'debug-stop', label: 'Stop', run: () => post({ type: 'stop' }) }] : []),
+		...(state?.running ? [{ icon: 'debug-stop', label: 'Stop', run: () => requestStop() }] : []),
 		{ icon: 'arrow-up', label: 'Send now', shortcut: 'Enter', disabled: !hasContent || !canSend(), run: () => send() },
 		{ icon: 'clock', label: 'Send later', shortcut: `${mod}Enter`, disabled: !state?.running || !hasContent || !canSend(),
 			description: state?.running ? 'After the current turn ends' : 'Available while the agent is working', run: () => send('queue') },
@@ -8152,6 +8250,7 @@ function toggleSendMenu(): void {
 	if (menu.classList.contains('open') && overlayAnchors.get(menu)?.anchor === sendButton) { closeSendMenu(); }
 	else { openSendMenu(); }
 }
+
 
 sendOptionsButton.addEventListener('click', toggleSendMenu);
 sendOptionsButton.addEventListener('mouseenter', () => {
@@ -8965,6 +9064,8 @@ interface MenuItem {
 	readonly warning?: string;
 	/** A section heading above this row. */
 	readonly heading?: string;
+	/** A checkbox row: a click runs this and redraws the row's check from its answer; the menu stays open. */
+	readonly toggle?: () => boolean;
 	readonly run: () => void;
 }
 
@@ -9013,6 +9114,11 @@ function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, acti
 			b.disabled = !!item.disabled;
 			if (item.warning) { b.title = item.warning; }
 			b.addEventListener('click', () => {
+				if (item.toggle) {
+					const on = item.toggle();
+					b.querySelector('.menu-check')?.replaceWith(on ? icon('check', 'menu-check') : el('span', { class: 'menu-check' }));
+					return;
+				}
 				// Opened over a panel, only the menu goes: the panel stays.
 				if (!closeMenuOverPanel()) {
 					closePopups();
@@ -9115,7 +9221,7 @@ agentPill.addEventListener('click', () => {
 			if (a.id === 'openrouter' && !a.available) { openFeatureSettings('openrouter'); }
 			else { post({ type: 'select', selection: { agent: a.id } }); }
 		},
-	})), 'Agent', gate('setAgentBinary').s === 'on' ? { icon: 'gear', title: 'Which Claude Code, Codex and Gemini CLI apps to use', run: openAgentApps } : undefined);
+	})), 'Agent', gate('setAgentBinary').s === 'on' ? { icon: 'gear', title: 'Which Claude Code, Codex, Gemini CLI, OpenCode and Pi apps to use', run: openAgentApps } : undefined);
 });
 
 /* agent apps */

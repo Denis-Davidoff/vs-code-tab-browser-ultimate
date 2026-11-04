@@ -577,6 +577,9 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 		return this._chat;
 	}
 
+	/** Turns of this conversation that have ended, as `turnEnd` reported them; see `ChatViewState.turnsEnded`. */
+	public turnsEnded = 0;
+
 	public get running(): boolean {
 		// Waiting to recover a failed turn counts: Stop is up for it,
 		// and a queued message waits behind it.
@@ -1779,6 +1782,7 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 				}
 				break;
 			case 'turnEnd': {
+				this.turnsEnded++;
 				for (const entry of chat.entries) {
 					if (entry.kind === 'progress' && entry.status === 'running' && !entry.cancel?.agentId && !(entry.related?.toolId && this._tool(entry.related.toolId)?.agent?.background)) {
 						Object.assign(entry, { status: event.error === 'Stopped.' || entry.cancelRequestedAt ? 'cancelled' : event.error ? 'failed' : 'done', updatedAt: Date.now(), endedAt: Date.now() });

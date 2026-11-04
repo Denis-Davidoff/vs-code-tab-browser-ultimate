@@ -69,7 +69,7 @@ const viewFields = {
 	themeTokens: 'shared', themeKind: 'shared', panel: 'editor', surfaceId: 'shared', surface: 'override', controls: 'override',
 	dragToken: 'editor', chatSurfaces: 'override', recordingQuality: 'shared', recordingSeconds: 'shared', featureAi: 'shared',
 	sleep: 'shared', voice: 'override', blocked: 'shared', detecting: 'shared', agents: 'override', selection: 'shared',
-	chatId: 'shared', entries: 'shared', linkedChats: 'shared', running: 'shared', attachments: 'override', suggestions: 'override',
+	chatId: 'shared', entries: 'shared', linkedChats: 'shared', running: 'shared', turnsEnded: 'shared', attachments: 'override', suggestions: 'override',
 	visualizations: 'shared', visualizationsUnchanged: 'editor',
 	hasBrowserTab: 'shared', browserApi: 'shared', nativeBrowser: 'shared', news: 'shared', newsHidden: 'shared',
 	tabs: 'shared', activeTab: 'shared', tabLimit: 'shared', terminals: 'editor', terminalFront: 'editor', terminalSupport: 'editor', pendingSends: 'shared', queuePaused: 'shared',

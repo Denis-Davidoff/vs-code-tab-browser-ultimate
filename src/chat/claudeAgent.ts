@@ -54,6 +54,8 @@ const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-
 	'--settings', JSON.stringify({ permissions: { ask: [...chatControlTools, ...terminalInputTools].map(tool => `mcp__ai-browser__${tool}`) } })];
 
 const controlTimeoutMs = 20_000;
+/** How long an acknowledged interrupt may take to end the turn before the process is ended. */
+const stopGraceMs = 4_000;
 /** How long detection's process is kept for the plan's usage after the models are in. */
 const usageProbeWaitMs = 8_000;
 
@@ -424,6 +426,7 @@ class ClaudeSession implements AgentSession {
 	 */
 	private readonly _agents = new Set<string>();
 	private _stopping = false;
+	private _stopTimer: ReturnType<typeof setTimeout> | undefined;
 	/**
 	 * `total_cost_usd` is cumulative, so each turn is the difference from the
 	 * last figure. **And a process started with `--resume` does not count from
@@ -551,6 +554,18 @@ class ClaudeSession implements AgentSession {
 				this._stopProcess();
 			}
 		});
+		// **An interrupt the CLI acknowledges is not a stop it carries out.** If
+		// the turn has not ended `stopGraceMs` later, the process is ended: a Stop
+		// must not depend on the CLI's own promptness, and `--resume` brings the
+		// conversation back at the next message. Only that process, still in the
+		// turn being stopped.
+		clearTimeout(this._stopTimer);
+		this._stopTimer = setTimeout(() => {
+			if (this._process === process && this._pendingTurns > 0 && this._stopping) {
+				this._stopProcess();
+			}
+		}, stopGraceMs);
+		this._stopTimer.unref?.();
 	}
 
 	public answer(id: string, allow: boolean, answers?: QuestionAnswers): void {

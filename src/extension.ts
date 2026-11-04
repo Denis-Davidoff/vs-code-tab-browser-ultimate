@@ -75,6 +75,7 @@ const stopSharingTabCommand = 'aiBrowser.stopSharingTab';
 const shareWithClaudeCommand = 'aiBrowser.shareTabWithClaudeCode';
 const shareWithCodexCommand = 'aiBrowser.shareTabWithCodex';
 const shareWithGeminiCommand = 'aiBrowser.shareTabWithGemini';
+const shareWithOtherAgentCommands = { opencode: 'aiBrowser.shareTabWithOpenCode', pi: 'aiBrowser.shareTabWithPi', openrouter: 'aiBrowser.shareTabWithOpenRouter' } as const;
 
 const openerId = 'aiBrowser.open';
 
@@ -265,31 +266,51 @@ export function activate(context: vscode.ExtensionContext) {
 	const recording = new BrowserRecording(context, browser);
 	context.subscriptions.push(recording);
 
-	// "Open Google Chrome for Claude Code / Codex / Gemini CLI" in the status bar
-	// menu: a Chrome tab opened, and a prompt naming it by our tab id on the
-	// clipboard. Not in `contributes.commands`: only the menu runs it, like
-	// `cancelElementPick`.
-	const assistantNames = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI' } as const;
+	// "Open Google Chrome for your agent" in the status bar menu: a Chrome tab
+	// opened, and a prompt naming it by our tab id on the clipboard. Every agent
+	// the extension supports: the three with a terminal Connect, OpenCode (whose
+	// Connect opens a terminal with the tools), and the two that live only in
+	// the AI Browser chat (Pi, OpenRouter), for which a chat with that agent is
+	// opened to paste into. Not in `contributes.commands`: only the menu runs it,
+	// like `cancelElementPick`.
+	const assistantNames = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI', opencode: 'OpenCode', pi: 'Pi', openrouter: 'OpenRouter' } as const;
 	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.openChromeForAssistant', async (who?: unknown) => {
-		if (who !== 'claude' && who !== 'codex' && who !== 'gemini') {
+		if (typeof who !== 'string' || !Object.prototype.hasOwnProperty.call(assistantNames, who)) {
+			return;
+		}
+		const agent = who as keyof typeof assistantNames;
+		const inChat = agent === 'pi' || agent === 'openrouter';
+		if (inChat && !supportsSecondarySidebar(vscode.version)) {
 			return;
 		}
 		const tab = await vscode.commands.executeCommand<vscode.BrowserTab | undefined>('aiBrowser.openInChrome');
 		if (!tab) {
 			return;
 		}
-		const name = assistantNames[who];
+		const name = assistantNames[agent];
 		const tabId = browser.tabIdOf(tab);
+		const missing = inChat
+			? 'If you have no ai-browser tools, tell me the AI Browser MCP server is off (setting aiBrowser.mcp.enabled). Do not add or edit any MCP configuration yourself.'
+			: agent === 'opencode'
+				? 'If you have no ai-browser tools, tell me to run "Connect your agent" → OpenCode from the AI Browser status bar menu, which opens an OpenCode terminal with them. Do not add or edit any MCP configuration yourself.'
+				: `If you have no ai-browser tools, tell me to run "AI Browser: Connect ${name}" and restart your session. Do not add or edit any MCP configuration yourself.`;
 		await vscode.env.clipboard.writeText([
 			`A Google Chrome tab has been opened for you to work in. In the AI Browser tools it is tab ${tabId}.`,
-			'Use the tools of the ai-browser MCP server; their names end in browser_state, browser_tabs, browser_select_tab, browser_navigate, browser_snapshot, browser_click, browser_fill, browser_text, browser_screenshot (your client adds a prefix to them).',
+			'Use the tools of the ai-browser MCP server; their names end in browser_state, browser_tabs, browser_select_tab, browser_navigate, browser_snapshot, browser_click, browser_fill, browser_text, browser_screenshot (your client may add a prefix to them).',
 			`Call browser_state first, then browser_select_tab with "${tabId}" so the tools act on that Chrome tab, and browser_navigate to open a page in it.`,
-			`If you have no ai-browser tools, tell me to run "AI Browser: Connect ${name}" and restart your session. Do not add or edit any MCP configuration yourself.`,
+			missing,
 			'Then wait for my request.',
 		].join('\n'));
+		if (inChat) {
+			// The agent lives in the AI Browser chat only: open a chat with it to paste into.
+			await vscode.commands.executeCommand(`${chatViewId}.focus`);
+			await chat.newChat('here', agent);
+		}
 		// Modal, like the paste prompt after Connect: the paste is the one step left.
 		await vscode.window.showInformationMessage(
-			vscode.l10n.t('Paste into the {0} chat; it works in the Chrome tab that just opened.', name),
+			inChat
+				? vscode.l10n.t('Paste into the AI Browser chat with {0} that just opened; it works in the new Chrome tab.', name)
+				: vscode.l10n.t('Paste into the {0} chat; it works in the Chrome tab that just opened.', name),
 			{ modal: true, detail: vscode.l10n.t('The prompt is on your clipboard.') });
 	}));
 	// The user's own recording commands. A failure the recording reported itself
@@ -459,6 +480,9 @@ export function activate(context: vscode.ExtensionContext) {
 		() => share(forKind('codex'))));
 	context.subscriptions.push(vscode.commands.registerCommand(shareWithGeminiCommand,
 		() => share(forKind('gemini'))));
+	for (const [kind, command] of Object.entries(shareWithOtherAgentCommands) as [keyof typeof shareWithOtherAgentCommands, string][]) {
+		context.subscriptions.push(vscode.commands.registerCommand(command, () => share(forKind(kind))));
+	}
 
 	context.subscriptions.push(vscode.commands.registerCommand(stopSharingTabCommand,
 		async (argument?: unknown) => {
@@ -658,7 +682,7 @@ export function activate(context: vscode.ExtensionContext) {
 				+ 'If the tools refuse the tab or are missing, tell me and stop.');
 			// Modal, like the recording prompt: a toast would pause the page (#10).
 			await vscode.window.showInformationMessage(
-				vscode.l10n.t('Paste into Claude Code, Codex or the AI Browser chat to work through the annotations.'),
+				vscode.l10n.t('Paste into Claude Code, Codex, Gemini CLI, OpenCode or the AI Browser chat to work through the annotations.'),
 				{ modal: true, detail: vscode.l10n.t('The prompt is on your clipboard.') });
 		} catch (error) { refuse(error instanceof Error ? error.message : String(error)); }
 	})));

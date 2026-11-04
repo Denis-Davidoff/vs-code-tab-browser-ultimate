@@ -47,6 +47,7 @@ function actionButton(action: RichAction, actions: RichViewActions): HTMLButtonE
 
 export function updateRichEntry(element: HTMLElement, entry: Extract<ChatEntry, { kind: 'notice' | 'progress' | 'plan' | 'result' }>, actions: RichViewActions, snapshots: Readonly<Record<string, VisualizationSnapshot>>): void {
 	element.className = `row rich-card rich-${entry.kind}`;
+	copyActions.set(element, actions);
 	if (entry.kind === 'notice') { element.classList.add(`notice-${entry.level ?? 'info'}`); element.setAttribute('role', entry.level === 'error' ? 'alert' : 'status'); }
 	if (entry.id) { element.dataset.entryId = entry.id; }
 	if (entry.kind === 'result') {
@@ -76,11 +77,29 @@ export function updateRichEntry(element: HTMLElement, entry: Extract<ChatEntry, 
 	}
 }
 
+/** A copy button shown on hover at the card's bottom right; copies through the host. */
+function noticeCopyButton(text: string, card: HTMLElement): HTMLButtonElement {
+	const copy = node('button', undefined, 'copy-button corner-copy');
+	copy.type = 'button'; copy.title = 'Copy notice'; copy.setAttribute('aria-label', 'Copy notice');
+	const glyph = (name: string) => node('span', undefined, `codicon codicon-${name}`);
+	copy.append(glyph('copy'));
+	copy.addEventListener('click', event => {
+		event.preventDefault(); event.stopPropagation();
+		const actions = copyActions.get(card); actions?.copy(text);
+		copy.replaceChildren(glyph('check'));
+		setTimeout(() => copy.replaceChildren(glyph('copy')), 1200);
+	});
+	return copy;
+}
+const copyActions = new WeakMap<HTMLElement, RichViewActions>();
+
 function richBody(element: HTMLElement, entry: Extract<ChatEntry, { kind: 'notice' | 'progress' | 'plan' }>): HTMLElement[] {
 	const parts: HTMLElement[] = [];
 	if (entry.kind === 'notice') {
 		parts.push(node('div', entry.text, 'rich-text'));
 		if (entry.reason) { parts.push(node('p', entry.reason, 'rich-reason')); }
+		// Only the notice's own words go to the clipboard — not its time or its buttons (asked for).
+		parts.push(noticeCopyButton([entry.text, entry.reason].filter(Boolean).join('\n\n'), element));
 		if (entry.at !== undefined) {
 			const time = node('time', new Date(entry.at).toLocaleTimeString(), 'rich-notice-time');
 			time.dateTime = new Date(entry.at).toISOString();

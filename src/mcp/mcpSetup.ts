@@ -1019,7 +1019,7 @@ function scopeNote(shared: SharedPage | undefined): string {
 		// sentence, and naming a title nobody can find is worse than naming
 		// none.
 		: vscode.l10n.t(" The tools follow whichever browser tab you are looking at;"
-			+ " run \"Share Tab with Claude Code\", \"Share Tab with Codex\" or \"Share Tab with Gemini CLI\" from a tab to give one away.");
+			+ " run a \"Share Tab with …\" command (Claude Code, Codex, Gemini CLI, OpenCode, Pi or OpenRouter) from a tab to give one away.");
 }
 
 export async function connectClaudeCode(server: McpServer, shared?: SharedPage): Promise<void> {

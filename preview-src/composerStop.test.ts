@@ -11,13 +11,14 @@ function fixture() {
 	const classes = new Set<string>();
 	const attributes = new Map<string, string>();
 	const sendButton = { disabled: false, title: '', classList: { toggle(name: string, on: boolean) { on ? classes.add(name) : classes.delete(name); } }, setAttribute(name: string, value: string) { attributes.set(name, value); } };
-	const state = { running: true, attachments: [] as any[], access: { tabs: [{ id: 'browser', owner: 'this' }] } };
+	const state = { running: true, turnsEnded: 3 as number | undefined, activeTab: 'a' as string | undefined, attachments: [] as any[], access: { tabs: [{ id: 'browser', owner: 'this' }] } };
 	const input = { value: '' };
 	const sendOptionsButton = { disabled: false };
 	const posted: any[] = [];
-	const render = runInNewContext(transpileModule(lift('renderSend'), {}).outputText + '\nrenderSend;', {
+	const { render, requestStop } = runInNewContext(transpileModule(['let stopRequested;', lift('renderSend'), lift('requestStop')].join('\n'), {}).outputText + '\n({ render: renderSend, requestStop });', {
 		state, input, sendButton, sendOptionsButton, navigator: { platform: 'Mac' }, canSend: () => true, refreshSendMenu() {},
 		setIcon() {}, isPinChip: (chip: any) => chip.kind === 'terminal' && chip.pinned === true,
+		post: (message: unknown) => posted.push(message),
 	});
 	const send = runInNewContext(transpileModule(lift('send'), {}).outputText + '\nsend;', {
 		state, input, canSend: () => true, isPinChip: (chip: any) => chip.kind === 'terminal' && chip.pinned === true,
@@ -26,7 +27,7 @@ function fixture() {
 	const items = runInNewContext(transpileModule(lift('sendMenuItems'), {}).outputText + '\nsendMenuItems;', {
 		state, input, navigator: { platform: 'Mac' }, canSend: () => true,
 		isPinChip: (chip: any) => chip.kind === 'terminal' && chip.pinned === true,
-		send: (mode?: string) => posted.push({ type: 'send', mode }), post: (message: unknown) => posted.push(message),
+		send: (mode?: string) => posted.push({ type: 'send', mode }), requestStop,
 	});
 	return { state, input, sendButton, sendOptionsButton, attributes, classes, render, send, posted, items };
 }
@@ -73,6 +74,47 @@ test('send menu actions use the same immediate and queue paths as the displayed 
 	assert.equal(later.shortcut, '⌘Enter');
 	stop.run(); now.run(); later.run();
 	assert.deepEqual(JSON.parse(JSON.stringify(f.posted)), [{ type: 'stop' }, { type: 'send' }, { type: 'send', mode: 'queue' }]);
+});
+
+test('Stop reads as stopping at once and goes back once the turn has ended', () => {
+	const f = fixture();
+	f.render();
+	f.items()[0].run();
+	assert.deepEqual(JSON.parse(JSON.stringify(f.posted)), [{ type: 'stop' }]);
+	assert.equal(f.attributes.get('aria-label'), 'Stopping');
+	assert.equal(f.classes.has('stopping'), true);
+	f.render();
+	assert.equal(f.attributes.get('aria-label'), 'Stopping', 'a state post while the turn still runs keeps it');
+	f.state.activeTab = 'b';
+	f.render();
+	assert.equal(f.attributes.get('aria-label'), 'Stop', 'another tab in front is not stopping');
+	f.state.activeTab = 'a'; f.items()[0].run(); f.state.running = false;
+	f.render();
+	assert.equal(f.attributes.get('aria-label'), 'Send');
+	assert.equal(f.classes.has('stopping'), false);
+	f.state.running = true;
+	f.render();
+	assert.equal(f.attributes.get('aria-label'), 'Stop', 'the next turn starts with a plain Stop');
+});
+
+test('Stopping goes when the stopped turn ends even if the next turn starts before the view sees running false', () => {
+	const f = fixture();
+	f.render();
+	f.items()[0].run();
+	assert.equal(f.attributes.get('aria-label'), 'Stopping');
+	// The stopped turn ended and a message sent during it started its own turn, both inside one coalesced post.
+	f.state.turnsEnded = 4;
+	f.render();
+	assert.equal(f.attributes.get('aria-label'), 'Stop', 'the follow-up turn is not stopping');
+	assert.equal(f.classes.has('stopping'), false);
+	// A host that reports no count still clears on running false.
+	f.state.turnsEnded = undefined;
+	f.items()[0].run();
+	f.render();
+	assert.equal(f.attributes.get('aria-label'), 'Stopping');
+	f.state.running = false;
+	f.render();
+	assert.equal(f.attributes.get('aria-label'), 'Send');
 });
 
 test('tapping the explicit send-options button opens queue choices without stopping the turn', () => {

@@ -37,13 +37,16 @@ export async function checkRichCards(frame: HTMLIFrameElement, state: ChatViewSt
 		const text = notice.querySelector<HTMLElement>('.rich-text')!.getBoundingClientRect();
 		const time = notice.querySelector('time')!.getBoundingClientRect();
 		const card = notice.getBoundingClientRect();
-		assert(time.top >= text.bottom && Math.abs(time.right - text.right) < 1, 'Notification time must sit below the text at the right edge.');
+		assert(time.top >= card.bottom && Math.abs(time.right - card.right) < 1, 'Notification time must sit outside the card, under its bottom-right corner.');
 		const style = frame.contentWindow!.getComputedStyle(notice);
 		assert(style.padding === '7px 12px' && Math.abs(card.right - text.right - 12 - parseFloat(style.borderRightWidth)) < 1 && Math.abs(text.left - card.left - 12 - parseFloat(style.borderLeftWidth)) < 1, 'Notification time changed the text padding or width.');
 		const controls = notice.querySelector<HTMLElement>('.rich-actions')!;
-		if (!controls.hidden) { assert(controls.getBoundingClientRect().right <= time.left, 'Notification actions overlap the timestamp.'); }
+		if (!controls.hidden) { assert(controls.getBoundingClientRect().bottom <= time.top, 'Notification actions overlap the timestamp.'); }
 	}
-	const notificationButtons = doc.querySelectorAll<HTMLButtonElement>('.notice-warning button');
+	doc.querySelector<HTMLButtonElement>('.notice-error .corner-copy')!.click();
+	await sleep(20);
+	assert(received.some(message => message.type === 'copy' && message.text === 'Failure\n\nA concrete error'), 'Notification copy button must copy only the notice text and reason.');
+	const notificationButtons = doc.querySelectorAll<HTMLButtonElement>('.notice-warning .rich-actions button');
 	notificationButtons[1].click(); notificationButtons[2].click();
 	await sleep(50);
 	assert(received.some(message => message.type === 'copy' && message.text === 'diagnostic'), 'Notification copy action failed.');

@@ -200,11 +200,37 @@ async function showMenu(controller: BrowserController): Promise<void> {
 	// the menu was still offering them.
 	const anyTab = controller.hasOpenTabs;
 
+	// Every agent the plugin supports; Pi and OpenRouter live in the chat only.
+	const agents = [
+		{ who: 'claude', name: 'Claude Code', connect: 'aiBrowser.connectClaudeCode' },
+		{ who: 'codex', name: 'Codex', connect: 'aiBrowser.connectCodex' },
+		{ who: 'gemini', name: 'Gemini CLI', connect: 'aiBrowser.connectGemini' },
+		{ who: 'opencode', name: 'OpenCode', connect: 'aiBrowser.connectOpenCode' },
+		{ who: 'pi', name: 'Pi', connect: 'aiBrowser.connectChatAgent' },
+		{ who: 'openrouter', name: 'OpenRouter', connect: 'aiBrowser.connectChatAgent' },
+	] as const;
+	const availableAgents = agents.filter(agent => supportsSecondarySidebar(vscode.version) || (agent.who !== 'pi' && agent.who !== 'openrouter'));
+
 	items.push({ label: vscode.l10n.t("Open"), kind: vscode.QuickPickItemKind.Separator });
 	items.push({
-		label: vscode.l10n.t("$(link) Open URL…"),
+		label: vscode.l10n.t("$(link) Open URL in VS Code Tab…"),
 		detail: vscode.l10n.t("Type or paste an address"),
 		run: () => openUrl(),
+	});
+	// Right under Open URL, asked for: the other way to open a page, for an agent.
+	items.push({
+		label: vscode.l10n.t("$(globe) Open Google Chrome for your agent"),
+		description: availableAgents.map(agent => agent.name).join(', '),
+		detail: vscode.l10n.t("Opens a Chrome tab and copies a prompt that hands it to the agent"),
+		run: async () => {
+			const agent = (await vscode.window.showQuickPick(availableAgents.map(agent => ({
+				label: agent.name, agent,
+				description: agent.connect === 'aiBrowser.connectChatAgent' ? vscode.l10n.t("Opens an AI Browser Chat with it") : undefined,
+			})), {
+				title: vscode.l10n.t("Open Google Chrome for which agent?"), ignoreFocusOut: true,
+			}))?.agent;
+			if (agent) { await vscode.commands.executeCommand('aiBrowser.openChromeForAssistant', agent.who); }
+		},
 	});
 	if (await shouldUseIntegratedBrowser()) {
 		// Only offered when the built-in browser will take it. The webview panel
@@ -212,7 +238,7 @@ async function showMenu(controller: BrowserController): Promise<void> {
 		// and the page lives in a cross-origin iframe, so a `file:` URL there is
 		// a blank panel with no error.
 		items.push({
-			label: vscode.l10n.t("$(file) Open File…"),
+			label: vscode.l10n.t("$(file) Open File in VS Code Tab…"),
 			detail: vscode.l10n.t("Preview a local HTML file"),
 			run: () => openFile(),
 		});
@@ -272,15 +298,6 @@ async function showMenu(controller: BrowserController): Promise<void> {
 	// with no browser tab open the longer label promised something it could not
 	// do.
 	// One row per action; choose the agent afterwards.
-	const agents = [
-		{ who: 'claude', name: 'Claude Code', connect: 'aiBrowser.connectClaudeCode' },
-		{ who: 'codex', name: 'Codex', connect: 'aiBrowser.connectCodex' },
-		{ who: 'gemini', name: 'Gemini CLI', connect: 'aiBrowser.connectGemini' },
-		{ who: 'opencode', name: 'OpenCode', connect: 'aiBrowser.connectOpenCode' },
-		{ who: 'pi', name: 'Pi', connect: 'aiBrowser.connectChatAgent' },
-		{ who: 'openrouter', name: 'OpenRouter', connect: 'aiBrowser.connectChatAgent' },
-	] as const;
-	const availableAgents = agents.filter(agent => supportsSecondarySidebar(vscode.version) || (agent.who !== 'pi' && agent.who !== 'openrouter'));
 	const pickAgent = async (title: string) => (await vscode.window.showQuickPick(
 		availableAgents
 			.map(agent => ({ label: agent.name, agent, description: agent.connect === 'aiBrowser.connectChatAgent'
@@ -297,19 +314,6 @@ async function showMenu(controller: BrowserController): Promise<void> {
 		run: async () => {
 			const agent = await pickAgent(vscode.l10n.t("Connect which agent?"));
 			if (agent) { await vscode.commands.executeCommand(agent.connect, agent.who); }
-		},
-	});
-	items.push({
-		label: vscode.l10n.t("$(globe) Open Google Chrome for your agent"),
-		description: vscode.l10n.t("Claude Code, Codex, Gemini CLI"),
-		detail: vscode.l10n.t("Opens a Chrome tab and copies a prompt that hands it to the agent"),
-		run: async () => {
-			const agent = (await vscode.window.showQuickPick(agents.filter(agent =>
-				agent.who === 'claude' || agent.who === 'codex' || agent.who === 'gemini')
-				.map(agent => ({ label: agent.name, agent })), {
-					title: vscode.l10n.t("Open Google Chrome for which agent?"), ignoreFocusOut: true,
-				}))?.agent;
-			if (agent) { await vscode.commands.executeCommand('aiBrowser.openChromeForAssistant', agent.who); }
 		},
 	});
 	items.push({
@@ -402,6 +406,23 @@ async function showMenu(controller: BrowserController): Promise<void> {
 			description: page,
 			run: () => vscode.commands.executeCommand('aiBrowser.shareTabWithGemini'),
 		});
+		items.push({
+			label: vscode.l10n.t("$(link) Give this tab to OpenCode"),
+			description: page,
+			run: () => vscode.commands.executeCommand('aiBrowser.shareTabWithOpenCode'),
+		});
+		if (supportsSecondarySidebar(vscode.version)) {
+			items.push({
+				label: vscode.l10n.t("$(link) Give this tab to Pi"),
+				description: page,
+				run: () => vscode.commands.executeCommand('aiBrowser.shareTabWithPi'),
+			});
+			items.push({
+				label: vscode.l10n.t("$(link) Give this tab to OpenRouter"),
+				description: page,
+				run: () => vscode.commands.executeCommand('aiBrowser.shareTabWithOpenRouter'),
+			});
+		}
 		items.push({
 			label: alreadyShared
 				? vscode.l10n.t("$(link) Give this tab to every assistant")

@@ -185,7 +185,7 @@ export function chatBlocked(): string | undefined {
 		return vscode.l10n.t("The chat needs VS Code 1.106 or later.");
 	}
 	if (!vscode.workspace.isTrusted) {
-		return vscode.l10n.t("The chat is not available in Restricted Mode: Claude Code and Codex load this folder's own configuration, which can run commands. Trust the folder to use it.");
+		return vscode.l10n.t("The chat is not available in Restricted Mode: Claude Code, Codex, Gemini CLI, OpenCode and Pi load this folder's own configuration, which can run commands. Trust the folder to use it.");
 	}
 	if (workspaceIsRemoteFromHost()) {
 		return vscode.l10n.t("The chat is not available in a remote window yet: AI Browser runs on this machine, while the project is on the remote one.");
@@ -1411,6 +1411,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			visualizations: this._active.visualizations,
 			messageCount: this._active.chat.entries.filter(entry => entry.kind === 'user' || entry.kind === 'assistant').length,
 			running: this._active.running,
+			turnsEnded: this._active.turnsEnded,
 			// The pins first: they are the conversation's, not a draft's, and carry no `@N`.
 			attachments: [...this._pinChips(this._active), ...this._active.attachments.map(a => ({ ...a.chip, reference: attachmentReference(a.chip) }))],
 			suggestions: this._suggestions().map(s => s.chip),
@@ -2770,7 +2771,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		if (!agent || !model || !backend) {
 			const problems = this._registry.agents.map(a => a.problem).filter(Boolean);
-			tab.push({ kind: 'error', text: problems.length ? problems.join('\n') : vscode.l10n.t("No agent is available. Install Claude Code or Codex, then press Refresh.") });
+			tab.push({ kind: 'error', text: problems.length ? problems.join('\n') : vscode.l10n.t("No agent is available. Install Claude Code, Codex, Gemini CLI, OpenCode or Pi, or add an OpenRouter key in Chat Settings, then press Refresh.") });
 			// Kept in the chat rather than lost, so it can be copied and sent again.
 			if (text.trim()) {
 				tab.push({ kind: 'notice', text: vscode.l10n.t("Not sent: {0}", text) });

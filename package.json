@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex + Gemini + OpenCode + Pi + OpenRouter",
 	"description": "Chat with browser, MCP for Chrome and embedded browser tab with AI capabilities, Claude, Codex, Gemini, OpenCode, Pi and OpenRouter integration (Qwen, LM Studio, Ollama, etc.)",
-	"version": "0.9.17",
+	"version": "0.9.18",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -166,6 +166,7 @@
 		"onCommand:aiBrowser.connectClaudeCode",
 		"onCommand:aiBrowser.connectCodex",
 		"onCommand:aiBrowser.connectGemini",
+		"onCommand:aiBrowser.connectOpenCode",
 		"onCommand:aiBrowser.openGeminiCli",
 		"onCommand:aiBrowser.checkMcpConnection",
 		"onCommand:aiBrowser.enableBrowserApi",
@@ -193,6 +194,9 @@
 		"onCommand:aiBrowser.shareTabWithClaudeCode",
 		"onCommand:aiBrowser.shareTabWithCodex",
 		"onCommand:aiBrowser.shareTabWithGemini",
+		"onCommand:aiBrowser.shareTabWithOpenCode",
+		"onCommand:aiBrowser.shareTabWithPi",
+		"onCommand:aiBrowser.shareTabWithOpenRouter",
 		"onCommand:aiBrowser.copyElementCssLocation",
 		"onCommand:aiBrowser.addCssLocationToClaudeCode",
 		"onCommand:aiBrowser.addCssLocationToCodex",
@@ -338,6 +342,12 @@
 			{
 				"command": "aiBrowser.connectGemini",
 				"title": "%command.connectGemini.title%",
+				"category": "%displayName%",
+				"icon": "$(plug)"
+			},
+			{
+				"command": "aiBrowser.connectOpenCode",
+				"title": "%command.connectOpenCode.title%",
 				"category": "%displayName%",
 				"icon": "$(plug)"
 			},
@@ -670,6 +680,21 @@
 			{
 				"command": "aiBrowser.shareTabWithGemini",
 				"title": "%command.shareTabWithGemini.title%",
+				"category": "%displayName%"
+			},
+			{
+				"command": "aiBrowser.shareTabWithOpenCode",
+				"title": "%command.shareTabWithOpenCode.title%",
+				"category": "%displayName%"
+			},
+			{
+				"command": "aiBrowser.shareTabWithPi",
+				"title": "%command.shareTabWithPi.title%",
+				"category": "%displayName%"
+			},
+			{
+				"command": "aiBrowser.shareTabWithOpenRouter",
+				"title": "%command.shareTabWithOpenRouter.title%",
 				"category": "%displayName%"
 			},
 			{
@@ -1531,6 +1556,14 @@
 			],
 			"commandPalette": [
 				{
+					"command": "aiBrowser.shareTabWithPi",
+					"when": "!aiBrowser.chatUnsupported"
+				},
+				{
+					"command": "aiBrowser.shareTabWithOpenRouter",
+					"when": "!aiBrowser.chatUnsupported"
+				},
+				{
 					"command": "aiBrowser.recording.stopEnding",
 					"when": "false"
 				},
@@ -1919,6 +1952,24 @@
 				}
 			],
 			"aiBrowser.otherAgentsMenu": [
+				{
+					"command": "aiBrowser.connectOpenCode",
+					"group": "1_opencode@1"
+				},
+				{
+					"command": "aiBrowser.shareTabWithOpenCode",
+					"group": "1_opencode@2"
+				},
+				{
+					"command": "aiBrowser.shareTabWithPi",
+					"group": "1_chat@1",
+					"when": "!aiBrowser.chatUnsupported"
+				},
+				{
+					"command": "aiBrowser.shareTabWithOpenRouter",
+					"group": "1_chat@2",
+					"when": "!aiBrowser.chatUnsupported"
+				},
 				{
 					"command": "aiBrowser.connectOtherAgent",
 					"group": "2_mcp@1"

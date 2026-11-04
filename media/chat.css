@@ -1068,8 +1068,15 @@ button {
 .exec-output:hover .copy-button,
 .io-row:hover .copy-button,
 .code-block:hover .copy-button,
-.markdown blockquote:hover > .copy-button {
+.markdown blockquote:hover > .copy-button,
+.row.rich-notice:hover .copy-button {
 	opacity: 1;
+}
+
+/* Quotes and notices: the copy button sits at the bottom right, on hover (asked for). */
+.copy-button.corner-copy {
+	top: auto;
+	bottom: 4px;
 }
 
 .copy-button:hover {
@@ -1744,9 +1751,12 @@ button {
 	height: 28px;
 }
 
-.send-slot.send-controls {
-	width: 58px;
-	gap: 2px;
+/* The send-options chevron is for touch screens only, which cannot hover Send to
+   open its menu; with a pointer it is hidden and Send keeps its own 28 px slot. */
+.ghost.round.send-options { display: none; }
+@media (hover: none) {
+	.send-slot.send-controls { width: 58px; gap: 2px; }
+	.ghost.round.send-options { display: inline-flex; }
 }
 
 /* Send / Stop and the mic sit 2 px higher and 4 px further right than the column (asked
@@ -2312,6 +2322,20 @@ button {
 	background: var(--soft-2);
 	color: var(--fg);
 	box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+/* Pressed and waiting for the turn to end: dimmed and pulsing, still clickable. */
+.send.stop.stopping {
+	animation: send-stopping 1s ease-in-out infinite alternate;
+}
+
+@keyframes send-stopping {
+	from { opacity: 1; }
+	to { opacity: 0.45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.send.stop.stopping { animation: none; opacity: 0.6; }
 }
 
 /* ---------------------------------------------------------------- popups */
@@ -6626,7 +6650,7 @@ body.vv-locked {
 .composer-tab-count.agents { background: var(--vscode-focusBorder); color: var(--vscode-button-foreground, #fff); }
 .composer-tab-count.access { background: color-mix(in srgb, var(--vscode-foreground) 14%, transparent); color: var(--vscode-foreground); }
 .composer-tab.active { color: var(--vscode-foreground); font-weight: 600; }
-.composer-tab.active::after { background: var(--vscode-focusBorder); }
+.composer-tab.active::after { background: var(--vscode-focusBorder); transform: translateX(calc(var(--swipe-pull, 0) * 12px)); transition: background .12s, transform .16s ease-out; }
 .composer-tab:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; border-radius: 4px; }
 
 /* Chat: the message box, no skills. Skills: every skill, wrapped, in the box's place. */
@@ -7077,7 +7101,9 @@ body.vv-locked {
 .rich-notice .rich-text { grid-column: 1 / -1; grid-row: 1; }
 .rich-notice .rich-reason { grid-column: 1 / -1; grid-row: 2; margin: 4px 0 0; }
 .rich-notice > .rich-actions { grid-column: 1; grid-row: 3; min-width: 0; }
-.rich-notice-time { grid-column: 2; grid-row: 3; align-self: end; justify-self: end; margin-top: 6px; line-height: 1.3; color: var(--fg-3); font-size: 11px; white-space: nowrap; }
+/* The time sits outside the card, under its bottom-right corner (asked for); the card keeps room below for it. */
+.row.rich-notice:has(> .rich-body > .rich-notice-time) { margin-bottom: 22px; }
+.rich-notice-time { position: absolute; top: calc(100% + 3px); right: 0; line-height: 1.3; color: var(--fg-3); font-size: 11px; white-space: nowrap; }
 .rich-notice.notice-info { --notice-color: var(--vscode-notificationsInfoIcon-foreground, #609ddb); }
 .rich-notice.notice-warning { --notice-color: var(--vscode-notificationsWarningIcon-foreground, #cca700); }
 .rich-notice.notice-error { --notice-color: var(--vscode-notificationsErrorIcon-foreground, #e45a5a); }
@@ -7122,6 +7148,11 @@ body.vv-locked {
 }
 
 /* the emoji a chat tab can be labelled with */
-.mark-popup { display: grid; grid-template-columns: repeat(8, 28px); gap: 2px; padding: 6px; }
+/* `.open` only: a bare `.mark-popup { display: grid }` comes after `.popup { display: none }` and kept it on screen. */
+.mark-popup.open { display: grid; }
+.mark-popup { grid-template-columns: repeat(8, 28px); gap: 2px; padding: 6px; }
 .mark-choice { width: 28px; height: 28px; padding: 0; border: none; border-radius: 6px; background: transparent; font-size: 16px; line-height: 1; cursor: pointer; }
 .mark-choice:hover, .mark-choice:focus-visible { background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent); outline: none; }
+
+/* A menu opened at the pointer hangs from this point (`openComposerTabsMenu`). */
+.pointer-anchor { position: fixed; width: 0; height: 0; pointer-events: none; }
