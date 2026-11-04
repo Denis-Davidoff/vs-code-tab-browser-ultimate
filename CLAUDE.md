@@ -10914,6 +10914,12 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
 561. **An acknowledged interrupt taken for a stop** → a CLI can answer `interrupt` with success
      and go on with the turn, and nothing then ended it: the button stayed Stop and read as a click
      that did nothing. Bound it (`stopGraceMs`, then end the process) and show the press at once.
+562. **`Page.bringToFront` on a built-in browser tab** → VS Code's CDP proxy answers it with
+     `Method not found` (-32601), so clicking a conversation's pinned page badge failed with that
+     raw error. `tabSource.reveal` shows the tab instead: Chrome through `Target.activateTarget`,
+     a built-in tab by finding its editor in `window.tabGroups` (no input, label = page title),
+     focusing that group by position and running `workbench.action.openEditorAtIndex`. A failure
+     goes to the status bar. Not run inside VS Code yet.
 
 ## Special cases and non-obvious decisions
 

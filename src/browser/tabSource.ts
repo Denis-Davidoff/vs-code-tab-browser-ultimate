@@ -34,6 +34,31 @@ function vscodeEvent<T>(read: () => vscode.Event<T>): vscode.Event<T> {
 	};
 }
 
+const focusGroupCommands = ['First', 'Second', 'Third', 'Fourth', 'Fifth', 'Sixth', 'Seventh', 'Eighth']
+	.map(n => `workbench.action.focus${n}EditorGroup`);
+
+/**
+ * Shows a built-in browser tab's editor. `window.tabGroups` models no browser
+ * input, so a browser editor is a tab with `input === undefined`, matched by
+ * its label against the page title (`BrowserTab.title` may carry ` (<url>)`
+ * after it, #147). The group is focused by position, then the editor by index.
+ */
+async function revealVscodeTab(tab: vscode.BrowserTab): Promise<boolean> {
+	const title = tab.title ?? '';
+	const matches = (label: string) => !!label && (label === title || title.startsWith(`${label} (`));
+	const groups = vscode.window.tabGroups.all;
+	for (let g = 0; g < groups.length; g++) {
+		const index = groups[g].tabs.findIndex(t => t.input === undefined && matches(t.label));
+		if (index < 0) { continue; }
+		const focus = focusGroupCommands[g];
+		if (!focus) { return false; }
+		await vscode.commands.executeCommand(focus);
+		await vscode.commands.executeCommand('workbench.action.openEditorAtIndex', index);
+		return true;
+	}
+	return false;
+}
+
 function merged<T>(...events: vscode.Event<T>[]): vscode.Event<T> {
 	return (listener, thisArg, disposables) => {
 		const parts = events.map(event => event(listener, thisArg));
@@ -65,6 +90,16 @@ export const tabs = {
 	 * Opens a page. `chrome` when the caller says so, or when the built-in
 	 * browser is not available and Chrome is connected.
 	 */
+	/**
+	 * Brings an open tab forward. Chrome through `Target.activateTarget`; the
+	 * built-in browser through its editor tab, since its CDP proxy has no
+	 * `Page.bringToFront` (answers -32601) and the proposal has no `show()`.
+	 * Answers whether it found the tab to show.
+	 */
+	async reveal(tab: vscode.BrowserTab): Promise<boolean> {
+		if (tab instanceof ChromeTab) { await chrome.activateTab(tab); return true; }
+		return revealVscodeTab(tab);
+	},
 	async open(url: string, options: { preserveFocus?: boolean; where?: 'vscode' | 'chrome' } = {}): Promise<vscode.BrowserTab> {
 		const where = options.where ?? (isBrowserApiGranted() ? 'vscode' : 'chrome');
 		if (where === 'chrome') { return chrome.openTab(url); }

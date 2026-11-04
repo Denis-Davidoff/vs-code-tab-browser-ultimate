@@ -479,6 +479,13 @@ export class ChromeBrowser implements vscode.Disposable {
 		return tab;
 	}
 
+	/** Brings an open tab's window and the tab forward. */
+	public async activateTab(tab: ChromeTab): Promise<void> {
+		const control = await this.connect();
+		await control.send('Target.activateTarget', { targetId: tab.targetId });
+		this.markActive(tab);
+	}
+
 	public markActive(tab: ChromeTab): void {
 		if (this._active === tab) { return; }
 		this._active = tab;

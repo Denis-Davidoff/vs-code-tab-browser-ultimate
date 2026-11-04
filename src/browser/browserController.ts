@@ -1557,16 +1557,12 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	/** A click on the conversation's pinned browser badge brings that page forward. */
-	public async revealTab(id: string): Promise<void> {
+	public async revealTab(id: string): Promise<boolean> {
 		const tab = tabSource.all.find(candidate => this._idOf(candidate) === id);
-		if (!tab) { return; }
-		const release = this._hold(tab);
-		try {
-			const session = await this._sessionFor(tab);
-			await session.client.send('Page.bringToFront');
-		} finally {
-			release();
-		}
+		if (!tab) { return false; }
+		// Not `Page.bringToFront`: the built-in browser's CDP proxy answers it
+		// with -32601, so the tab is shown through its editor (or Chrome's target).
+		return tabSource.reveal(tab);
 	}
 
 	/** A closed chat's tabs become free for everyone. */

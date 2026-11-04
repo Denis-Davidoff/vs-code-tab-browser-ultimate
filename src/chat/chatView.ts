@@ -2061,7 +2061,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					if (message.reveal === true) {
 						// Revealing an old badge must not take a tab that has since moved.
 						if (this._browser.accessTabs(this._active.chat.id).some(tab => tab.id === message.tabId && tab.owner === 'this')) {
-							await this._browser.revealTab(message.tabId);
+							// A failure goes to the status bar: a toast would pause the page (#10).
+							const shown = await this._browser.revealTab(message.tabId).catch(() => false);
+							if (!shown) { refuse(vscode.l10n.t('Could not bring that page forward.')); }
 						}
 					} else if (message.take || this._browser.accessTabs(this._active.chat.id).some(tab => tab.id === message.tabId && tab.owner === 'this')) {
 						this._browser.setTabOwner(message.tabId, message.take ? this._active.chat.id : undefined);
