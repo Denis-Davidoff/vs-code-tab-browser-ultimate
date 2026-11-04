@@ -2605,7 +2605,7 @@ last-resort branches skip it), and is refused by `browser_select_tab` and by a `
 (`_ownedRefusal`). A tab the user opened has no owner and is free for everyone. The owning chat
 works on its own tab before the one in front (`_resolveTab`), unless it pinned another. A user's
 share outranks ownership, and the user's own commands carry no caller and are never refused.
-The chat's **Access** composer tab lists every tab with Take / Make free (`tabAccess`, editor
+In the browser menu a tab pinned to another chat is drawn orange (`MenuItem.warning`), its tooltip saying that chat's agent uses it too. A page pinned to this chat is offered by `@` in the message box ("Pinned pages", `attachmentItems`): pins are not draft attachments and have no `@N`, so it inserts the tab id the agent is given in the pinned-tabs context. The chat's **Access** composer tab lists every tab with Take / Make free (`tabAccess`, editor
 only), who watches the conversation from Chrome or the website (`ChatStateSurfaces.watchers`,
 the website's `viewerCount`), and its pinned terminals. Closing a chat tab frees its tabs
 (`releaseChatTabs`); ownership is in memory and does not survive a reload. Not run inside VS Code
@@ -4838,7 +4838,7 @@ from their shipped webviews — Claude Code 2.1.301 (`webview/index.css`, CSS mo
 | composer | Codex surface, Claude Code focus ring | 12 px radius, soft shadow, accent ring on focus, round send button in the foreground colour |
 | pills and menus | both | agent and model are ghost pills opening in-view menus (label, description, check), not native `<select>`s |
 | code blocks | both | header with the language — in the chart yellow, bold (asked for) — and a copy button; the code a little brighter than the prose, mixed towards white on a dark theme and towards black on a light one (`body.vscode-dark` / `vscode-light`; high contrast keeps its own) |
-| quotes | asked for | `6px 14px` inside, a 3 px left border in the chart yellow, text at 88 % of the foreground; consecutive `>` lines are **one** blockquote, a bare `>` a paragraph break — each line used to be a blockquote of its own, which padding turned into a stack of boxes; a quote with no text (a lone `>` while a reply streams) draws nothing |
+| quotes | asked for | `6px 14px` inside, a 3 px left border in the chart yellow, text at 88 % of the foreground; consecutive `>` lines are **one** blockquote, a bare `>` a paragraph break — each line used to be a blockquote of its own, which padding turned into a stack of boxes; a quote with no text (a lone `>` while a reply streams) draws nothing; a copy button at its top right on hover copies the quote's text (paragraphs, not the `>`), and the edge rules use `p:first-of-type` / `p:last-of-type` so the button is not their last child (#392) |
 | running a shell block | asked for | a code block fenced as `bash`, `sh`, `zsh`, `shell`, `console`, `fish`, `powershell`, `cmd` … gets a terminal button left of Copy on hover (`runInTerminalButton`, `shellLangs`); a menu asks where — VS Code's active terminal (a new one in the conversation's folder if none), a running chat terminal tab, or a new one — and `_runInTerminal` types the block with Enter (lines as `\r` in a tab, `sendText` in VS Code's). The click is the consent, no card; refused where `_blocked()` is; `runInTerminal` is editor-only in `commands.ts` |
 | copying a message | asked for | a copy button at the bottom right of every prompt and reply, on hover (`.message-copy`); a reply copies as its Markdown; the prompt's copy does not fold the prompt |
 | spacing | asked for | rows `--row-pad` (10px) apart above and below — 6px at first, widened on request twice; the timeline's dot and line are placed from the same variable, so change only it — and 20px between turns — none after a turn that holds only its prompt, so messages added during a turn sit 22px apart rather than 42 (asked for); in a reply, paragraphs, lists, quotes, code blocks and tables 0.9em apart |
@@ -6168,6 +6168,7 @@ folder* section of `chatView.ts`.
 
 - **Git footer**: beside the working path, the branch dropdown searches local and known remote
   branches, switches or creates a branch, and deletes local branches with `git branch -d`.
+  **The branch search keeps its text for two minutes after the last keystroke** across closing and reopening the window (`branchSearchKeepMs`), so a name can be typed in parts.
   **Enter in the branch search switches only to the branch named exactly**; anything else typed
   creates that branch, and an empty box does nothing. It used to check out the first branch whose
   name *contained* the text: any branch on an empty box, and `experiment-old` for "exp" while the
@@ -6542,6 +6543,7 @@ toolbar; at most 30, prompts up to 20 000 characters.
   a child of `.composer`, shown by `.skills-mode`; the choice is `composerTab` in the webview's
   `setState`, so every `vscode.setState` call must carry it (a test sandbox defines it too).
 - **The message box stays under every composer tab, whole** (asked for): Skills, Activity, Conversation, Bash, GitHub and Files are panels above the full composer — chips, suggestions and every button, as on the Chat tab. It used to be cut to one line there, chips hidden.
+- **Scrolling down over the composer tab row switches to Chat** (a vertical wheel, any other tab in front); the row is `overflow-y: hidden`, or the active underline's 1 px overflow made it jump on a wheel. **A sideways swipe over it walks the tabs** (asked for): one visible tab per 60 px of `deltaX`, in the row's own order, so a long swipe goes on to the first or last tab and stops there; 250 ms without events or a change of direction starts the count over. It takes the row's own sideways scroll (`preventDefault`), and the new tab is scrolled into view. Wheel only — a touch drag still scrolls the row.
 - **Which composer tabs are shown is a per-device choice** (Chat Settings → Appearance → Composer tabs, `localStorage` `aiBrowser.chat.composerTabsHidden`, all shown by default): Skills, Activity, Conversation, Bash, Files and GitHub can be switched off; Chat cannot be hidden. With every other tab off the whole tab row goes, Chat's title with it. Hiding the open tab returns to Chat, and its Alt+letter key does nothing.
 - **Activity and Conversation are composer tabs too** (asked for): Activity is one scrolling list in the
   box's place (`.composer-list`) with two sections, Agents then Access (`.cl-section`); Conversation lists
@@ -7405,6 +7407,7 @@ re-runs it. **While tabs overflow, the row reads: the tabs still shown, stretche
     before the rename does not flick the old name back.
   - **A named tab is not "empty"**: a chat from the history opens in a new tab instead of over it,
     and "Close this chat, start …" keeps the name on the tab it reuses.
+- **A tab can carry a label, one emoji** (right-click → Add label…, a grid of emoji; Change / Remove label): `StoredChat.mark`, put in front of the title (`ChatTab.setMark`, `_marked` on rename, the first message and a generated title), so every place that shows the title shows it. A fresh tab with a label reads "🔥 New chat"; its label is not kept across a reload until something is sent. Editor-only (`setTabMark` in `commands.ts`); the host takes only a pictograph with its modifiers.
 - **Closing a tab stops what it runs** — its turn and its agents — and keeps the chat in the
   history. A tab that is working asks first, in a popover under the tab (`placeTabConfirm`,
   flipped above when there is no room; a press outside or Escape cancels) — "… is still working.
@@ -7552,6 +7555,8 @@ into the wrong one, or with nobody watching:
 - **A waiting Claude prompt goes into the chat before it is saved** on every way of letting go —
   closing the tab, the view, a replaced backend: the save came first, and the history lacked a
   message the resumed session had.
+
+**A notice card (`.row.rich-notice`) is padded `7px 12px`**, less above and below than at the sides (asked for): the text's line height adds the rest, so the space reads even. `preview-src/richSmoke.ts` checks that value.
 
 ### Lists and links while composing
 

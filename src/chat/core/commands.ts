@@ -88,7 +88,7 @@ export const COMMANDS = {
 	// Tabs and history.
 	newChat: both('chat'), newTab: both('chat'),
 	// Chrome's tab strip picks which editor conversation the side panel shows (a pin).
-	selectTab: chat('local', 'mixed'), closeTab: both('chat'), renameTab: both('chat'),
+	selectTab: chat('local', 'mixed'), closeTab: both('chat'), renameTab: both('chat'), setTabMark: editor('Tab labels are set in VS Code.'),
 	openChat: chat('host', { no: 'Opening another saved conversation is available only in VS Code.' }),
 	tabAccess: editor('Who may use a browser tab is decided only in VS Code.'),
 	listAllAgents: chat('host', { no: 'Every chat\'s agents are listed only in VS Code.' }),

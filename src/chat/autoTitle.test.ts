@@ -81,7 +81,7 @@ test('late title preserves manual names, replaced chats, closed tabs and discard
 		const state = {
 			_closed: blocked === 'closed', _discarded: blocked === 'discarded', started: blocked !== 'unstarted',
 			_chat: { id: blocked === 'other-chat' ? 'other' : 'chat', title: 'Original', named: blocked === 'named' },
-			_save() { saves++; return Promise.resolve(); }, _post() { posts++; },
+			_save() { saves++; return Promise.resolve(); }, _post() { posts++; }, _marked(t: string) { return t; },
 		};
 		apply.call(state, 'chat', 'Generated title');
 		assert.equal(state._chat.title, blocked === 'none' ? 'Generated title' : 'Original');

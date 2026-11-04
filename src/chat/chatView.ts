@@ -1420,6 +1420,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				id: tab.id,
 				chatId: tab.chat.id,
 				canResumeInTerminal: !!tab.chat.ref,
+				mark: tab.chat.mark,
 				title: tab.title ?? vscode.l10n.t("New chat"),
 				agent: tab.started ? tab.chat.agent : undefined,
 				...this._tabModel(tab),
@@ -1948,6 +1949,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					const tab = this._tabs.find(t => t.id === message.id);
 					if (tab) { this._titleRequests.get(tab)?.abort(); tab.rename(title); }
 				}
+				return;
+			}
+			case 'setTabMark': {
+				// One emoji: a pictograph and its modifiers, nothing a title could not hold.
+				const mark = typeof message.mark === 'string' && message.mark.length <= 16
+					&& /^\p{Extended_Pictographic}[\p{Extended_Pictographic}\p{Emoji_Modifier}\u200d\ufe0f\u20e3]*$/u.test(message.mark) ? message.mark : undefined;
+				if (message.mark !== undefined && !mark) { return; }
+				this._tabs.find(t => t.id === message.id)?.setMark(mark);
 				return;
 			}
 			case 'closeTab':

@@ -794,6 +794,40 @@ let composerAccessShape = '';
 let composerAgentsShape = '';
 let composerHistoryShape = '';
 const touchPointer = window.matchMedia('(pointer: coarse)');
+// Scrolling down over the tab row folds a panel back to Chat (asked for). A sideways swipe
+// walks the tabs left or right, one tab per `composerSwipeStep` pixels, so a long swipe goes
+// on to the first or last tab and stops there; a pause or a change of direction starts over.
+const composerSwipeStep = 60;
+const composerSwipeGapMs = 250;
+let composerSwipe = 0;
+let composerSwipeAt = 0;
+composerTabs.addEventListener('wheel', event => {
+	const sideways = Math.abs(event.deltaX) > Math.abs(event.deltaY);
+	if (!sideways) {
+		if (event.deltaY > 0 && composerTab !== 'chat') {
+			event.preventDefault();
+			setComposerTab('chat');
+		}
+		return;
+	}
+	event.preventDefault();
+	const now = event.timeStamp;
+	if (now - composerSwipeAt > composerSwipeGapMs || Math.sign(event.deltaX) !== Math.sign(composerSwipe)) { composerSwipe = 0; }
+	composerSwipeAt = now;
+	composerSwipe += event.deltaX;
+	while (Math.abs(composerSwipe) >= composerSwipeStep) {
+		const step = composerSwipe > 0 ? 1 : -1;
+		composerSwipe -= step * composerSwipeStep;
+		const order = [...composerTabs.children].filter((b): b is HTMLButtonElement => b instanceof HTMLButtonElement && b.classList.contains('composer-tab') && !b.hidden);
+		const names = order.map(b => (Object.keys(composerTabButtons) as ComposerTab[]).find(k => composerTabButtons[k] === b)!);
+		const at = names.indexOf(composerTab);
+		const next = names[Math.min(names.length - 1, Math.max(0, at + step))];
+		if (!next || next === composerTab) { composerSwipe = 0; break; }
+		setComposerTab(next);
+		composerTabButtons[next].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+	}
+}, { passive: false });
+
 function setComposerTab(tab: ComposerTab, save = true): void {
 	const animate = save && tab !== composerTab && !reducedMotion.matches;
 	// Capture the displayed height before cancelling: a rapid switch continues where it is now.
@@ -1950,6 +1984,18 @@ usageAlertBar.setAttribute('role', 'status');
 
 const menu = el('div', { class: 'popup menu' });
 const usagePopup = el('div', { class: 'popup usage-popup' });
+/** The emoji a chat tab can be labelled with (asked for): one leads its title wherever it shows. */
+const markPopup = el('div', { class: 'popup mark-popup' });
+const tabMarkEmoji = ['🔥', '⭐', '🚀', '🐛', '✅', '❗', '❓', '💡', '🧪', '🔧', '📝', '📌', '🎯', '🧹', '🔒', '🎨', '📦', '🌐', '🤖', '🧠', '⚡', '🟢', '🟡', '🔴', '🔵', '🟣', '🟠', '⚪', '❤️', '👀', '🏁', '🚧'];
+function openMarkPicker(anchor: HTMLElement, tabId: string): void {
+	markPopup.replaceChildren(...tabMarkEmoji.map(mark => {
+		const b = button([mark], { class: 'mark-choice', title: `Label the chat ${mark}` });
+		b.addEventListener('click', () => { closePopups(); post({ type: 'setTabMark', id: tabId, mark }); });
+		return b;
+	}));
+	// Opened from the menu, which closes on the same click: open on the next turn.
+	setTimeout(() => { openAbove(markPopup, anchor, 'left'); (markPopup.firstElementChild as HTMLElement | null)?.focus(); }, 0);
+}
 const approvalPopup = el('div', { class: 'popup approval-popup' });
 /** The "/" palette: a search box over the chat's commands and the agent's skills. */
 const palette = el('div', { class: 'popup palette' });
@@ -2418,7 +2464,9 @@ function renderBranches(): void {
 }
 branchButton.addEventListener('click', () => {
 	if (branchPopup.classList.contains('open')) { closePopups(); return; }
-	branchSearch.value = '';
+	// A branch name is often typed in parts, closing the window between them: keep what was
+	// typed for two minutes after the last keystroke (asked for).
+	if (Date.now() - branchSearchTypedAt > branchSearchKeepMs) { branchSearch.value = ''; }
 	branchDeleting = undefined;
 	remoteConfirm = undefined;
 	branchError.textContent = '';
@@ -2428,7 +2476,9 @@ branchButton.addEventListener('click', () => {
 	refreshGitStatus();
 	branchSearch.focus();
 });
-branchSearch.addEventListener('input', () => { branchDeleting = undefined; renderBranches(); });
+const branchSearchKeepMs = 2 * 60_000;
+let branchSearchTypedAt = 0;
+branchSearch.addEventListener('input', () => { branchSearchTypedAt = Date.now(); branchDeleting = undefined; renderBranches(); });
 branchCreate.addEventListener('click', () => runBranchAction('create', branchSearch.value.trim()));
 branchSearch.addEventListener('keydown', event => {
 	if (event.isComposing) { return; }
@@ -2584,7 +2634,7 @@ function renderRemoteBar(s: ChatViewState): void {
 }
 
 if (!remoteSlot) { app.append(remoteBar); }
-app.append(featureSettingsPanel, sleepPopup, tabStrip, chatMain, selectorStrip, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, allAgentsPanel, agentAppsPanel);
+app.append(featureSettingsPanel, sleepPopup, tabStrip, chatMain, selectorStrip, menu, usagePopup, markPopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, allAgentsPanel, agentAppsPanel);
 
 /* ---------------------------------------------------------------- state */
 
@@ -3998,6 +4048,11 @@ function tabNode(t: StripTab): TabNode {
 			items.push({ separator: true, icon: 'terminal', label: 'Continue in VS Code terminal', command: 'resumeInTerminal', disabled: node.tab.busy || !!node.tab.queued || !!node.tab.skillRuns, run: () => post({ type: 'resumeInTerminal', id: node.tab.chatId }) });
 		}
 		const compact = wideChat.matches && chatDrawerCollapsed;
+		items.unshift(...(node.tab.mark ? [
+			{ icon: 'smiley', label: 'Change label…', command: 'setTabMark', run: () => openMarkPicker(anchor, node.tab.id) },
+			{ icon: 'close', label: 'Remove label', command: 'setTabMark', run: () => post({ type: 'setTabMark', id: node.tab.id }) },
+		] : [{ icon: 'smiley', label: 'Add label…', command: 'setTabMark', run: () => openMarkPicker(anchor, node.tab.id) }]) as MenuItem[]);
+		if (items.length > (node.tab.mark ? 2 : 1)) { items[node.tab.mark ? 2 : 1] = { ...items[node.tab.mark ? 2 : 1], separator: true }; }
 		if (overflowed) {
 			items.unshift({ icon: 'edit', label: 'Rename', command: 'renameTab', run: () => renameFromMenu(node) });
 		}
@@ -6586,6 +6641,8 @@ function renderMarkdown(text: string): DocumentFragment {
 			end();
 			// A lone `>` — a reply still streaming its first quoted word — is no box yet.
 			if (q.childElementCount) {
+				// Quotes carry things worth copying (a finding, a source) — a copy button on hover.
+				q.append(copyButton(() => [...q.querySelectorAll('p')].map(p => p.innerText).join('\n\n'), 'Copy quote'));
 				out.append(q);
 			}
 			continue;
@@ -8659,7 +8716,7 @@ function closePopups(except?: HTMLElement, keep?: HTMLElement): void {
 		}
 	}
 	if (except !== tabOverflowPanel && keep !== tabOverflowPanel) { overflowButton.setAttribute('aria-expanded', 'false'); }
-	for (const popup of [tabOverflowPanel, selectorStrip, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, allAgentsPanel, agentAppsPanel]) {
+	for (const popup of [tabOverflowPanel, selectorStrip, featureSettingsPanel, sleepPopup, menu, usagePopup, markPopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillEditor, historyPanel, agentsPanel, allAgentsPanel, agentAppsPanel]) {
 		if (popup !== except && popup !== keep) {
 			popup.classList.remove('open');
 			if (popup === featureSettingsPanel) {
@@ -8848,7 +8905,7 @@ document.addEventListener('mousedown', event => {
 		}
 		return;
 	}
-	if (![tabOverflowPanel, overflowButton, workdirSummary, gitRefreshSlot, effortBox, ultracodeBox, selectorStrip, featureSettingsPanel, sleepPopup, menu, usagePopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, allAgentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, compactSelector, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton, sendOptionsButton].some(n => n.contains(target))) {
+	if (![tabOverflowPanel, overflowButton, workdirSummary, gitRefreshSlot, effortBox, ultracodeBox, selectorStrip, featureSettingsPanel, sleepPopup, menu, usagePopup, markPopup, approvalPopup, palette, workdirPopup, branchPopup, gitPopup, paramsPopup, skillBar, historyPanel, agentsPanel, allAgentsPanel, agentAppsPanel, plusButton, usageButton, usageAlertText, agentsButton, compactSelector, agentPill, modelPill, approveToggle, slashButton, workdirButton, branchButton, commitButton, contextButton, sendOptionsButton].some(n => n.contains(target))) {
 		closePopups();
 	}
 });
@@ -8904,6 +8961,8 @@ interface MenuItem {
 	readonly command?: string;
 	/** A divider above the row: where one group of a menu ends and the next begins. */
 	readonly separator?: boolean;
+	/** Drawn in the chart orange, with this text as its tooltip: something to know before choosing it. */
+	readonly warning?: string;
 	/** A section heading above this row. */
 	readonly heading?: string;
 	readonly run: () => void;
@@ -8950,8 +9009,9 @@ function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, acti
 					item.description ? el('span', { class: 'menu-description', text: item.description }) : undefined),
 				item.shortcut ? el('span', { class: 'menu-shortcut', text: item.shortcut }) : '',
 				item.checked ? icon('check', 'menu-check') : el('span', { class: 'menu-check' }),
-			], { class: `menu-item${item.suggested ? ' suggested' : ''}` });
+			], { class: `menu-item${item.suggested ? ' suggested' : ''}${item.warning ? ' warning' : ''}` });
 			b.disabled = !!item.disabled;
+			if (item.warning) { b.title = item.warning; }
 			b.addEventListener('click', () => {
 				// Opened over a panel, only the menu goes: the panel stays.
 				if (!closeMenuOverPanel()) {
@@ -9241,6 +9301,7 @@ function browserMenuItems(): MenuItem[] {
 			run: () => post({ type: 'acceptSuggestion', id: page.id }) }] : []),
 		...(state?.access?.tabs ?? []).map(tab => ({ icon: 'globe', label: tab.title || tab.url, description: tab.owner === 'other' ? `Pinned to ${tab.ownerName ?? 'another chat'}` : tab.url,
 			checked: tab.owner === 'this', command: 'tabAccess' as const,
+			warning: tab.owner === 'other' ? `Also pinned to ${tab.ownerName ?? 'another chat'}, whose agent can use it too. Taking it moves it here — the other chat's agent loses it, and work there may be cut short.` : undefined,
 			run: () => post({ type: 'tabAccess', tabId: tab.id, take: tab.owner !== 'this' }) })),
 		{ icon: 'globe', label: 'Google Chrome', command: 'openBrowser.chrome', run: () => post({ type: 'openBrowser', where: 'chrome' }) },
 	];
@@ -9420,7 +9481,20 @@ function skillItems(s: ChatViewState): PaletteItem[] {
 }
 
 function attachmentItems(s: ChatViewState): PaletteItem[] {
-	return s.attachments.flatMap(chip => {
+	// Pinned browser tabs are not draft attachments (they outlive a send), so they have no `@N`;
+	// they are referenced by the tab id the agent is given in the pinned-tabs context.
+	const pages = (s.access?.tabs ?? []).filter(tab => tab.owner === 'this').map((tab): PaletteItem => ({
+		key: `page:${tab.id}`, group: 'Pinned pages', name: tab.id.toLowerCase(),
+		label: tab.title || tab.url, icon: 'globe', detail: tab.url,
+		haystack: `${tab.id} ${tab.title} ${tab.url} page`.toLowerCase(),
+		run: () => {
+			input.setRangeText(`\`${tab.id}\` (${(tab.title || tab.url).replace(/\s+/g, ' ')}) `, inlineStart, inlineEnd, 'end');
+			input.focus();
+			paletteDismissed = input.value;
+			afterBoxEdit();
+		},
+	}));
+	return [...pages, ...s.attachments.flatMap(chip => {
 		const reference = chip.reference;
 		if (!reference) { return []; }
 		return [{
@@ -9436,7 +9510,7 @@ function attachmentItems(s: ChatViewState): PaletteItem[] {
 				afterBoxEdit();
 			},
 		}];
-	});
+	})];
 }
 
 function paletteQuery(): string {

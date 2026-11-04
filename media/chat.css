@@ -1067,7 +1067,8 @@ button {
 .exec-command:hover .copy-button,
 .exec-output:hover .copy-button,
 .io-row:hover .copy-button,
-.code-block:hover .copy-button {
+.code-block:hover .copy-button,
+.markdown blockquote:hover > .copy-button {
 	opacity: 1;
 }
 
@@ -1279,18 +1280,19 @@ button {
 }
 
 .markdown blockquote {
+	position: relative;
 	margin: 1.26em 0;
-	padding: 6px 14px;
+	padding: 6px 30px 6px 14px;
 	border-left: 3px solid var(--vscode-charts-yellow, #cca700);
 	color: color-mix(in srgb, var(--vscode-foreground) 88%, transparent);
 }
 
 /* the padding is the gap; a paragraph's own margin would add to it at the ends */
-.markdown blockquote > :first-child {
+.markdown blockquote > p:first-of-type {
 	margin-top: 0;
 }
 
-.markdown blockquote > :last-child {
+.markdown blockquote > p:last-of-type {
 	margin-bottom: 0;
 }
 
@@ -1925,6 +1927,11 @@ button {
 .toolbar-attachments .has-suggestion > .codicon-globe,
 .menu-item.suggested .menu-label,
 .menu-item.suggested .menu-icon { color: color-mix(in srgb, var(--vscode-charts-green, #74c991) 65%, var(--fg-2)); }
+
+/* a choice with a catch (a page another chat's agent also uses): its tooltip says what */
+.menu-item.warning .menu-label,
+.menu-item.warning .menu-description,
+.menu-item.warning .menu-icon { color: var(--vscode-charts-orange, #d18616); }
 
 .toolbar.compact-effort .selector-controls > .pill { min-width: 0; }
 .toolbar.compact-effort .selector-controls > .pill:nth-child(1) { flex: 0 1 auto; max-width: 90px; }
@@ -6580,6 +6587,9 @@ body.vv-locked {
 	margin-bottom: 6px;
 	border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 9%, transparent);
 	overflow-x: auto;
+	/* overflow-x: auto makes y auto too, and the active underline (bottom: -1px) overflowed
+	   by a pixel: a vertical wheel over the row scrolled it up and down. */
+	overflow-y: hidden;
 	scrollbar-width: none;
 }
 
@@ -7058,6 +7068,8 @@ body.vv-locked {
 	border-color: color-mix(in srgb, var(--notice-color) 25%, var(--border));
 	border-left: 3px solid var(--notice-color);
 	background: color-mix(in srgb, var(--notice-color) 6%, var(--bg));
+	/* Less above and below than at the sides: the text's line height adds the rest, so the space reads even (asked for). */
+	padding: 7px 12px;
 }
 .row.rich-notice::before, .row.rich-notice::after { display: none; }
 /* Share a footer row with actions, keeping the text's full width and padding. */
@@ -7065,7 +7077,7 @@ body.vv-locked {
 .rich-notice .rich-text { grid-column: 1 / -1; grid-row: 1; }
 .rich-notice .rich-reason { grid-column: 1 / -1; grid-row: 2; margin: 4px 0 0; }
 .rich-notice > .rich-actions { grid-column: 1; grid-row: 3; min-width: 0; }
-.rich-notice-time { grid-column: 2; grid-row: 3; align-self: end; justify-self: end; margin-top: 8px; color: var(--fg-3); font-size: 11px; white-space: nowrap; }
+.rich-notice-time { grid-column: 2; grid-row: 3; align-self: end; justify-self: end; margin-top: 6px; line-height: 1.3; color: var(--fg-3); font-size: 11px; white-space: nowrap; }
 .rich-notice.notice-info { --notice-color: var(--vscode-notificationsInfoIcon-foreground, #609ddb); }
 .rich-notice.notice-warning { --notice-color: var(--vscode-notificationsWarningIcon-foreground, #cca700); }
 .rich-notice.notice-error { --notice-color: var(--vscode-notificationsErrorIcon-foreground, #e45a5a); }
@@ -7108,3 +7120,8 @@ body.vv-locked {
 	padding: 0 6px;
 	font-weight: 600;
 }
+
+/* the emoji a chat tab can be labelled with */
+.mark-popup { display: grid; grid-template-columns: repeat(8, 28px); gap: 2px; padding: 6px; }
+.mark-choice { width: 28px; height: 28px; padding: 0; border: none; border-radius: 6px; background: transparent; font-size: 16px; line-height: 1; cursor: pointer; }
+.mark-choice:hover, .mark-choice:focus-visible { background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent); outline: none; }

@@ -29,6 +29,15 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
 
+## 0.9.17 — 2026-11-04
+
+- **Tab labels** — right-click a chat tab and choose **Add label…** to put an emoji in front of its title.
+- **Pinned pages with @** — a page pinned to this chat can be inserted with `@` in the message box. A page pinned to another chat is shown in orange in the browser menu.
+- **Composer tabs** — swipe sideways over Chat, Skills, Activity… to walk through them, all the way to the first or last. Scrolling down over the row returns to Chat, and the row no longer jumps by a pixel.
+- **Copy a quote** — hover over a quote in a reply to copy its text.
+- **Branch search remembers** — text typed into the Branches search stays for two minutes after the window closes.
+- **Fixes** — notice cards are more compact.
+
 ## 0.9.16 — 2026-11-02
 
 - **Bash tab** — the History tab is now **Conversation**, and a new **Bash** tab (Alt+B) lists every shell command the agents ran, with running ones on top. Open a command's output in the chat or follow it in a read-only VS Code terminal.

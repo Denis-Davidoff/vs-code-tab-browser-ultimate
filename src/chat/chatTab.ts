@@ -44,6 +44,8 @@ const richBlockLimit = 200_000;
 const restartQuietMs = 2_500;
 
 export interface StoredChat {
+	/** An emoji the user put on the tab; it leads the title, so wherever the title shows it does. */
+	mark?: string;
 	managed?: OwnedChatState;
 	historyCompleteness?: 'full' | 'partial' | 'unknown';
 	linkedNoteReceipts?: Record<string, string>;
@@ -592,12 +594,30 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 
 	/** What the tab is called: the chat's title once it has one — from its first message, or the user. */
 	public get title(): string | undefined {
-		return this.started || this._chat.named ? this._chat.title : undefined;
+		if (this.started || this._chat.named) { return this._chat.title; }
+		return this._chat.mark ? `${this._chat.mark} New chat` : undefined;
+	}
+
+	/** `title` with the tab's mark in front, once: a title that already carries it is left alone. */
+	private _marked(title: string): string {
+		const mark = this._chat.mark;
+		return mark && !title.startsWith(`${mark} `) ? `${mark} ${title}` : title;
+	}
+
+	/** Puts an emoji in front of the title, replaces it, or (undefined) takes it off. */
+	public setMark(mark: string | undefined): void {
+		const old = this._chat.mark;
+		let base = this._chat.title;
+		if (old && base.startsWith(`${old} `)) { base = base.slice(old.length + 1); }
+		this._chat.mark = mark;
+		if (this.started || this._chat.named) { this._chat.title = mark ? `${mark} ${base}` : base; }
+		if (this.started) { void this._save(); }
+		this._post();
 	}
 
 	/** The user named the tab. Saved with the chat once it has started; see `openTabsKey` before that. */
 	public rename(title: string): void {
-		this._chat.title = title;
+		this._chat.title = this._marked(title);
 		this._chat.named = true;
 		if (this.started) {
 			void this._save();
@@ -608,7 +628,7 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 	/** A late background title must never replace a manually named or different conversation. */
 	public applyGeneratedTitle(chatId: string, title: string): void {
 		if (this._closed || this._discarded || this._chat.id !== chatId || this._chat.named || !this.started) { return; }
-		this._chat.title = title;
+		this._chat.title = this._marked(title);
 		void this._save();
 		this._post();
 	}
@@ -1160,7 +1180,7 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 			this._chat.agent = agent;
 			this._chat.owned = true;
 			if (!this._chat.named) {
-				this._chat.title = chatTitle(shown || attachments[0]?.chip.label || '');
+				this._chat.title = this._marked(chatTitle(shown || attachments[0]?.chip.label || ''));
 			}
 			this._chat.createdAt = Date.now();
 		}

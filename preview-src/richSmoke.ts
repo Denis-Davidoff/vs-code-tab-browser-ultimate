@@ -39,7 +39,7 @@ export async function checkRichCards(frame: HTMLIFrameElement, state: ChatViewSt
 		const card = notice.getBoundingClientRect();
 		assert(time.top >= text.bottom && Math.abs(time.right - text.right) < 1, 'Notification time must sit below the text at the right edge.');
 		const style = frame.contentWindow!.getComputedStyle(notice);
-		assert(style.padding === '12px' && Math.abs(card.right - text.right - 12 - parseFloat(style.borderRightWidth)) < 1 && Math.abs(text.left - card.left - 12 - parseFloat(style.borderLeftWidth)) < 1, 'Notification time changed the text padding or width.');
+		assert(style.padding === '7px 12px' && Math.abs(card.right - text.right - 12 - parseFloat(style.borderRightWidth)) < 1 && Math.abs(text.left - card.left - 12 - parseFloat(style.borderLeftWidth)) < 1, 'Notification time changed the text padding or width.');
 		const controls = notice.querySelector<HTMLElement>('.rich-actions')!;
 		if (!controls.hidden) { assert(controls.getBoundingClientRect().right <= time.left, 'Notification actions overlap the timestamp.'); }
 	}

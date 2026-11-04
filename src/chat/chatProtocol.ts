@@ -859,6 +859,8 @@ export interface ChatTabSummary {
 	readonly id: string;
 	readonly chatId: string;
 	readonly title: string;
+	/** The emoji leading `title`, if the user put one on the tab. */
+	readonly mark?: string;
 	/** Absent while the conversation has not started, and so belongs to no agent yet. */
 	readonly agent?: AgentId;
 	/** One short line for under the title: the agent id and the model as its agent labels it (`codex → astra6`), when it can be told. */
@@ -1136,6 +1138,8 @@ export type ViewToHost =
 	| { readonly type: 'closeTab'; readonly id: string }
 	/** A tab renamed by double-click; the chat keeps the name, and the first message no longer sets one. */
 	| { readonly type: 'renameTab'; readonly id: string; readonly title: string }
+	/** An emoji leading the tab's title everywhere it shows; absent takes it off. */
+	| { readonly type: 'setTabMark'; readonly id: string; readonly mark?: string }
 	/** The answer to `switchTo`. */
 	| { readonly type: 'switchAgent'; readonly choice: 'newTab' | 'replace' | 'continue' | 'cancel' }
 	/**
