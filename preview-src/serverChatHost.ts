@@ -155,7 +155,8 @@ window.aiBrowserChatHost={
   postMessage(message:ViewToHost){
     if(message.type==='ready'){rendererReady=true;render();for(const event of eventQueue.splice(0))emit(event);if(latest)send({type:'ready'});return;}
     if(terminals.fromView(message))return;
-    if(message.type==='saveDrafts'||message.type==='tabDraft'||message.type==='reportTheme')return;
+    // chatFocus and watchAgentProcesses belong to the editor; the renderer may send them before its first state.
+    if(message.type==='saveDrafts'||message.type==='tabDraft'||message.type==='reportTheme'||message.type==='chatFocus'||message.type==='watchAgentProcesses')return;
     if(message.type==='selectTab'){const tab=latest?.view?.tabs.find(t=>t.id===message.id);if(tab)pinConversation(tab.chatId);return;}
     if(message.type==='copy'){void copy(message.text).catch(error=>notice(String(error)));return;}
     if(message.type==='openLink'&&message.external&&/^https?:\/\//i.test(message.url)){window.open(message.url,'_blank','noopener,noreferrer');return;}

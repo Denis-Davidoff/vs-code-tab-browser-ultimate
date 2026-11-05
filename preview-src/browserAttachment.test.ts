@@ -12,13 +12,19 @@ function fixture() {
 	const state = { suggestions: [page], attachments: [] as unknown[], nativeBrowser: 'granted', access: { tabs: [] as any[] } };
 	const posted: unknown[] = [];
 	const classes = new Set<string>();
+	const plusClasses = new Set<string>();
+	const node = (props: object, children: unknown[]) => ({ ...props, children, listeners: {} as Record<string, () => void>,
+		addEventListener(type: string, fn: () => void) { this.listeners[type] = fn; } });
 	const row = { hidden: false, children: [] as unknown[], replaceChildren(...children: unknown[]) { this.children = children; } };
 	const api = runInNewContext(transpileModule([
-		"let attachmentsShown = '';", lift('renderAttachments'), lift('browserMenuItems'),
+		"let attachmentsShown = '';", lift('renderAttachments'), lift('browserMenuItems'), lift('suggestionNode'),
 		'({ renderAttachments, browserMenuItems });',
 	].join('\n'), {}).outputText, {
 		state, post: (message: unknown) => posted.push(message), attachmentsRow: row,
 		browserButton: { classList: { toggle: (name: string, on: boolean) => on ? classes.add(name) : classes.delete(name) } },
+		plusButton: { classList: { toggle: (name: string, on: boolean) => on ? plusClasses.add(name) : plusClasses.delete(name) } },
+		button: (children: unknown[], props: object) => node(props, children), el: (_tag: string, props: object = {}, ...children: unknown[]) => node(props, children),
+		icon: (name: string) => name, chipIcon: (chip: { kind: string }) => chip.kind,
 		fileIconsSignature: '', chipShown: (chip: unknown) => chip,
 		isPinChip: (chip: { terminalId?: string }) => !!chip.terminalId,
 		pinChipNode: (chip: unknown) => chip,
@@ -26,7 +32,7 @@ function fixture() {
 		toolbarLayoutShape: '', scheduleToolbarLayout() {},
 		autosize() {},
 	});
-	return { state, posted, classes, row, api, page };
+	return { state, posted, classes, plusClasses, row, api, page };
 }
 
 test('browser menu offers to pin the current page', () => {
@@ -40,6 +46,7 @@ test('browser menu offers to pin the current page', () => {
 
 test('browser pins stay in the row across sends and update when the title, owner or open tabs change', () => {
 	const f = fixture();
+	f.state.suggestions = [];
 	const tab = { id: 'browser-1', title: 'Google', url: 'https://google.com', owner: 'this' };
 	f.state.access.tabs = [tab];
 	f.api.renderAttachments(f.state);
@@ -76,20 +83,28 @@ test('browser menu pins and unpins the exact tab, including taking one from anot
 	]));
 });
 
-test('globe loses its highlight after attachment and suggestions do not use the bottom row', () => {
+test('globe loses its highlight after attachment; the page is offered as a dashed chip in the bottom row', () => {
 	const f = fixture();
 	f.api.renderAttachments(f.state);
 	assert.ok(f.classes.has('has-suggestion'));
-	assert.equal(f.row.hidden, true);
-	assert.equal(f.row.children.length, 0);
+	assert.equal(f.plusClasses.has('has-suggestion'), false);
+	assert.equal(f.row.hidden, false);
+	assert.equal(f.row.children.length, 1);
+	const chip = f.row.children[0] as any;
+	assert.equal(chip.class, 'chip suggested');
+	chip.children[0].listeners.click();
+	chip.children[1].listeners.click();
+	assert.equal(JSON.stringify(f.posted), JSON.stringify([{ type: 'acceptSuggestion', id: f.page.id }, { type: 'acceptSuggestion', id: f.page.id }]));
 	f.state.suggestions = [];
 	f.state.attachments = [{ id: 'attached-page', kind: 'sharedPage', reference: '@1' }];
 	f.api.renderAttachments(f.state);
 	assert.equal(f.classes.has('has-suggestion'), false);
 	assert.equal(f.row.hidden, true);
 	assert.equal(f.api.browserMenuItems()[0].label, 'Google Chrome');
-	f.state.suggestions = [f.page];
+	f.state.suggestions = [{ id: 'suggest:file:x', kind: 'file', label: 'x.ts' }];
 	f.state.attachments = [];
 	f.api.renderAttachments(f.state);
-	assert.ok(f.classes.has('has-suggestion'));
+	assert.equal(f.classes.has('has-suggestion'), false);
+	assert.ok(f.plusClasses.has('has-suggestion'));
+	assert.equal(f.row.hidden, false);
 });

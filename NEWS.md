@@ -29,6 +29,14 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
 
+## 0.9.19 — 2026-11-05
+
+- **Cmd+W closes the chat tab** — with focus in the chat, Cmd+W (Ctrl+W) or Option+W (Alt+W) closes the conversation in front instead of an editor; a working tab asks first. The close button's tooltip shows the key.
+- **Inspect a running process** — in the Bash tab, a process's "…" menu can open it in a VS Code terminal (its command, folder, CPU, memory and, when it writes to a file, its live output), copy its PID or stop it. Process monitoring now works on Windows too, and checks less often while nobody is looking.
+- **Open files are offered again** — the file, selection or page in front shows as a dashed chip with "+" under the message box.
+- **Connections & permissions** — clearer cards with room between each checkbox and its text.
+- **Fixes** — the loader at the top of an old chat appears only if its history takes more than a second, and Chrome and the website no longer show a stray "available in the editor" notice.
+
 ## 0.9.18 — 2026-11-04
 
 - **Stop shows at once** — the button reads "Stopping…" from the click until the turn ends, and a Claude Code turn that does not stop within 4 seconds is ended for you (the conversation resumes on the next message).

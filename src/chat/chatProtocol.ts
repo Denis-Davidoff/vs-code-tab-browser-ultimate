@@ -774,7 +774,7 @@ export interface ChatViewState {
 	readonly attachments: readonly AttachmentChip[];
 	/**
 	 * What could be attached and is not yet: the text editor and the browser tab
-	 * the user has open, offered in the toolbar menus — see `acceptSuggestion`.
+	 * the user has open, offered as dashed chips under the message box and in the toolbar menus — see `acceptSuggestion`.
 	 */
 	readonly suggestions: readonly AttachmentChip[];
 	readonly hasBrowserTab: boolean;
@@ -1008,6 +1008,8 @@ export type HostToView =
 	/** The Remote terminals section of Chat Settings: the three `aiBrowser.chat.remoteTerminal*` switches as stored, or the reason a change was refused. */
 	| { readonly type: 'remoteTerminalSettings'; readonly remoteTerminal: boolean; readonly shell: boolean; readonly agent: boolean; readonly chrome?: { readonly allowed: boolean; readonly shell: boolean; readonly agent: boolean }; readonly files?: import('./core/remoteFiles').RemoteFileSettings; readonly error?: string }
 	| { readonly type: 'openSleep' }
+	/** Cmd/Ctrl+W with focus in the chat: close the tab in front, as its × does (asking first while it works). */
+	| { readonly type: 'closeFrontTab' }
 	/** The title bar's Agents: every agent and workflow of every open chat, grouped by chat. `refresh` updates an open panel only. */
 	| { readonly type: 'allAgents'; readonly chats: readonly AllAgentsChat[]; readonly refresh: boolean }
 	/** Queued messages given back by Stop: added to what is in the message box, not sent. */
@@ -1048,6 +1050,12 @@ export type HostToView =
 
 export type ViewToHost =
 	| { readonly type: 'stopAgentProcess'; readonly chatId: string; readonly id: string }
+	/** A read-only look at an observed process in a VS Code terminal: details, and its output when that goes to a file. */
+	| { readonly type: 'inspectAgentProcess'; readonly chatId: string; readonly id: string }
+	/** The Bash tab is on screen (or not): the process monitor samples often only while someone looks. */
+	| { readonly type: 'watchAgentProcesses'; readonly on: boolean }
+	/** Keyboard focus entered or left this chat's webview: drives `aiBrowser.chatFocused`, the Cmd+W (close chat tab) keybinding's condition. */
+	| { readonly type: 'chatFocus'; readonly focused: boolean }
 	| { readonly type: 'connectChat'; readonly chatId: string; readonly targetChatId?: string }
 	| { readonly type: 'disconnectChat'; readonly chatId: string; readonly targetChatId: string }
 	| { readonly type: 'connectExchange'; readonly url: string; readonly pointId: string; readonly key?: string; readonly password?: string }

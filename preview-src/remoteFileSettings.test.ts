@@ -14,8 +14,10 @@ test('Permissions shows saved access separately for Chrome and the website and p
 		remoteTerminalData: undefined, remoteTerminalRender: undefined, connectionPermissionRender: undefined,
 		state: undefined, connectionPermissionGroups, readConnectionPermissions,
 		post: (message: any) => posts.push(message),
+		icon: (name: string) => ({ tag: 'i', icon: name }),
 		el(tag: string, props: any = {}, ...children: any[]) {
-			const node = { tag, ...props, children, isConnected: true, attrs: {} as any, events: {} as any,
+			const node = { tag, ...props, children, isConnected: true, attrs: {} as any, events: {} as any, classes: new Set<string>(),
+					classList: { toggle(name: string, on: boolean) { on ? node.classes.add(name) : node.classes.delete(name); } },
 				append(...items: any[]) { this.children.push(...items); },
 				setAttribute(key: string, value: string) { this.attrs[key] = value; },
 				addEventListener(key: string, handler: () => void) { this.events[key] = handler; },

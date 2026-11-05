@@ -71,6 +71,9 @@ export const COMMANDS = {
 	runInTerminal: editor('Commands run only in VS Code.'),
 	showShellOutput: editor('Shell output terminals open only in VS Code.'),
 	stopAgentProcess: editor('Agent process controls are available only in VS Code.'),
+	watchAgentProcesses: editor('The process monitor runs only in VS Code.'),
+	chatFocus: editor('Keybindings belong to VS Code.'),
+	inspectAgentProcess: editor('Process details open only in VS Code: the command line may carry credentials.'),
 
 	// The conversation.
 	cancelProgress: chat('host', 'host'), send: chat('host', 'host'), stop: chat('host', 'host'), select: chat('host', 'host'), switchAgent: chat('host', 'host'),

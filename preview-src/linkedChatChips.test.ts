@@ -14,7 +14,7 @@ test('connection chips retain clicks during streaming, manage the correct chat, 
 	const run = runInNewContext(transpileModule(`let attachmentsShown = ''; ${render}; renderAttachments;`, {}).outputText, {
 		button: (children: any[], props: object) => node('button', props, ...children), el: node, icon: (name: string) => name,
 		post: (message: unknown) => posted.push(message), attachmentsRow: row,
-		browserButton: { classList: { toggle() {} } }, fileIconsSignature: '', chipShown: (chip: unknown) => chip,
+		browserButton: { classList: { toggle() {} } }, plusButton: { classList: { toggle() {} } }, suggestionNode() {}, fileIconsSignature: '', chipShown: (chip: unknown) => chip,
 		isPinChip: () => false, pinChipNode() {}, browserPinNode() {}, autosize() {}, toolbarLayoutShape: '', scheduleToolbarLayout() {},
 	});
 	const state: any = { chatId: 'a', suggestions: [], attachments: [], linkedChats: [{ chatId: 'b', title: 'Research', access: 'readWrite', available: true }] };

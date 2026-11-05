@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex + Gemini + OpenCode + Pi + OpenRouter",
 	"description": "Chat with browser, MCP for Chrome and embedded browser tab with AI capabilities, Claude, Codex, Gemini, OpenCode, Pi and OpenRouter integration (Qwen, LM Studio, Ollama, etc.)",
-	"version": "0.9.18",
+	"version": "0.9.19",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -228,6 +228,7 @@
 		"onCommand:aiBrowser.chat.history",
 		"onCommand:aiBrowser.chat.refreshAgents",
 		"onCommand:aiBrowser.chat.allAgents",
+		"onCommand:aiBrowser.chat.closeTab",
 		"onCommand:aiBrowser.chat.keepAwake",
 		"onCommand:aiBrowser.chat.keepAwakeActive",
 		"onCommand:aiBrowser.chat.addElement",
@@ -824,6 +825,11 @@
 				"title": "%command.chat.settings.title%",
 				"category": "%displayName%",
 				"icon": "$(gear)"
+			},
+			{
+				"command": "aiBrowser.chat.closeTab",
+				"title": "%command.chat.closeTab.title%",
+				"category": "%displayName%"
 			},
 			{
 				"command": "aiBrowser.chat.allAgents",
@@ -1696,6 +1702,10 @@
 					"when": "!aiBrowser.chatUnsupported"
 				},
 				{
+					"command": "aiBrowser.chat.closeTab",
+					"when": "false"
+				},
+				{
 					"command": "aiBrowser.chat.keepAwake",
 					"when": "!aiBrowser.chatUnsupported && !aiBrowser.keepAwakeActive"
 				},
@@ -2132,6 +2142,12 @@
 				"key": "ctrl+alt+c",
 				"mac": "cmd+alt+c",
 				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'chat:xpath' && !aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
+			},
+			{
+				"command": "aiBrowser.chat.closeTab",
+				"key": "ctrl+w",
+				"mac": "cmd+w",
+				"when": "aiBrowser.chatFocused && !aiBrowser.chatUnsupported"
 			},
 			{
 				"command": "aiBrowser.logins.fill",

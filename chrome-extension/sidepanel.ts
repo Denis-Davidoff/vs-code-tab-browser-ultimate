@@ -109,7 +109,10 @@ let feedback: string | undefined;
 let pairingPending = false;
 // What Chrome forwards is Chrome's column of the command table, kept with the host's checks.
 const supported = new Set<string>(forwardedTypes('chrome'));
-const passive = new Set(['ready', 'saveDrafts', 'tabDraft']);
+// `chatFocus` and `watchAgentProcesses` are the editor's own (a keybinding, the
+// process monitor); the renderer can send them before its first state says it is
+// in Chrome, and a refusal there would show as a notice in the conversation.
+const passive = new Set(['ready', 'saveDrafts', 'tabDraft', 'chatFocus', 'watchAgentProcesses']);
 
 const hostListeners = new Set<(message: HostToView) => void>();
 function emit(message: HostToView): void { for (const listener of hostListeners) { listener(message); } }

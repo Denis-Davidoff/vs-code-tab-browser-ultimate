@@ -6550,6 +6550,7 @@ toolbar; at most 30, prompts up to 20 000 characters.
   composer's agent/model toolbar stays under both, since a skill runs on them). The skill bar is
   a child of `.composer`, shown by `.skills-mode`; the choice is `composerTab` in the webview's
   `setState`, so every `vscode.setState` call must carry it (a test sandbox defines it too).
+- **A thread at its end stays at its end when the composer tab changes** (asked for): the other tabs make the composer taller and the thread shorter, so `setComposerTab` measures "at the end" (under 60 px, the thread's own rule) before the switch and, if so, keeps `scrollTop` at the bottom for the length of the height animation (`pinThreadToEnd`, 320 ms; a wheel, press or touch on the thread ends it). A thread scrolled up is left where it was.
 - **The message box stays under every composer tab, whole** (asked for): Skills, Activity, Conversation, Bash, GitHub and Files are panels above the full composer — chips, suggestions and every button, as on the Chat tab. It used to be cut to one line there, chips hidden.
 - **Scrolling down over the composer tab row does nothing** — it used to switch to Chat, and was removed on request after it kept firing inside sideways swipes; the row is `overflow-y: hidden`, or the active underline's 1 px overflow made it jump on a wheel. **A sideways swipe over it, or over the composer below it, walks the tabs** (asked for): fingers moving right go to the tab on the right (with natural scrolling that is a negative `deltaX`), left to the left, in the row's own order, stopping at the first or last; over the composer an element inside that can still scroll sideways in that direction (`scrollsSideways`: a long code line, a diff) keeps the gesture. The decisions are a leaf under test, [preview-src/composerSwipe.ts](preview-src/composerSwipe.ts); a gesture ends after 200 ms without events (`swipeGapMs`). **A fast flick moves exactly one tab** (asked for): a delta of 24 px or more, or 0.6 px/ms over the last 80 ms, steps at 28 px and then swallows the rest of the gesture and its momentum tail (a lockout of 350 ms, extended while events keep coming, covers a tail that resumes after a short gap) — the first version (one event's size, counted per gesture) either stepped twice or never. **But the lock must not outlive the tail**, which the second version did: extended by every event, it held as long as wheel events kept coming, so a second flick made before the tail went quiet was swallowed whole, and slow mode never came back. A tail only fades, so inside the lock a delta of 24 px or more that is over twice the previous one, or that turns the other way, is a new flick (120 ms after the step at the earliest) and steps again; and once the tail falls to 2 px the lock ends, so a slow drag can follow at once. **For 1.5 s after a consumed swipe event the next gesture is claimed wherever the pointer is** (`composerSwipedAt`): a step changes the composer's height and leaves the pointer over the thread, and the next flick then went nowhere until the pointer was moved back. Only a sideways gesture is consumed, so a vertical scroll of the thread still scrolls. **A slow drag works like a magnet** (asked for): the active tab's underline is pulled up to 12 px towards the next tab (`--swipe-pull`, none under reduced motion), the tab snaps at 56 px, and holds 220 ms before the next step can arm, so a slow drag walks on tab by tab without skipping. **The axis is decided on the first 6 px of movement**, sideways only if |dx| ≥ |dy| summed over them, never from one event: a vertical scroll drifting sideways does not walk the tabs, and a diagonal start of a sideways swipe no longer reads as "scroll down". **The gesture is claimed where it starts and followed on `document`** (capture listener): a step animates the composer's height, so the rest of the gesture landed on the thread and was lost. It takes the default (`preventDefault`), and the new tab is scrolled into view. Wheel only — a touch drag still scrolls the row.
 - **Which composer tabs are shown is a per-device choice** (Chat Settings → Appearance → Composer tabs, `localStorage` `aiBrowser.chat.composerTabsHidden`, all shown by default): Skills, Activity, Conversation, Bash, Files and GitHub can be switched off; Chat cannot be hidden. With every other tab off the whole tab row goes, Chat's title with it. Hiding the open tab returns to Chat, and its Alt+letter key does nothing. **A right-click anywhere on the tab row**, the empty space to its right included, opens the same choice as a menu (`openComposerTabsMenu`): every tab in the row's order with a check, Chat disabled ("Always shown"); a row toggles through `setComposerTabShown` and **stays open, its check redrawn in place** (`MenuItem.toggle`), so several can be changed in a row — closing and reopening it made it blink. It opens **at the pointer**, hung from a fixed zero-size `pointerAnchor` placed at the click, so it neither sits at the row's left edge nor moves when the row changes width. With every other tab hidden the row is gone, and only Chat Settings brings them back.
@@ -7407,7 +7408,8 @@ re-runs it. **While tabs overflow, the row reads: the tabs still shown, stretche
   what it shows changes, and moved only when out of order (re-inserting ends a transition). It
   used to be rebuilt whenever anything in it changed, which also lost clicks (#365) and keyboard
   focus on a tab.
-- **A clicked conversation tab spins until its chat is drawn** (asked for): `markTabLoading` adds
+- **A clicked conversation tab spins until its chat is drawn** (asked for), **but only after 1.2 s**
+  (`tabLoadingDelayMs`, asked for: a spinner flashing on every quick switch was noise): `markTabLoading` adds
   `loading` to the tab's root, which hides its mark and shows a `codicon-loading` spinner
   (`.tab-loading`, present in every label, hidden otherwise); the first state naming it as
   `activeTab` (or without it) clears it, and 10 s at most. A class, not a rebuild (#365).
@@ -7434,6 +7436,23 @@ re-runs it. **While tabs overflow, the row reads: the tabs still shown, stretche
   flipped above when there is no room; a press outside or Escape cancels) — "… is still working.
   Closing it stops its reply and 1 agent." — never in a modal. It was a band across the strip,
   which took a row for as long as the question stood (asked for: a tooltip with buttons).
+- **Cmd+W (Ctrl+W), or Option+W (Alt+W), with focus in the chat closes the chat tab in front, not an editor** (asked
+  for: in the side bar it closed an editor the user was not even looking at). A contributed
+  keybinding, `aiBrowser.chat.closeTab`, on `aiBrowser.chatFocused` — so it is listed in Keyboard
+  Shortcuts and can be rebound or removed — not a key caught in `chat.ts`. The key is our own:
+  the webview posts `chatFocus` on its window's `focus` / `blur` (`_focusedSurface`, editor only),
+  and the command acts on that surface, a chat panel as well as the side bar. `focusedView` was
+  not relied on: unmeasured for a webview view. **Option+W is the exception, caught in `chat.ts`**
+  (the composer-tab Alt+letter handler, by `e.code`): a keybinding cannot stop the textarea typing
+  "∑", so the view takes the key itself; inside a terminal tab it stays the shell's. The view closes the front tab through its × (`closeFrontTab`), so a
+  working tab asks first; a lone empty conversation is left alone. Inside a terminal tab it works
+  on macOS (Cmd chords pass to the workbench); elsewhere xterm takes Ctrl+W as the shell's
+  delete-word and it never reaches the keybinding. **The key is cleared when the view goes too**
+  (`onDidDispose`, `dispose()`): a webview torn down while focused sends no blur, and the stale key
+  kept Cmd+W from closing editors anywhere. **Chrome and the website drop `chatFocus` and
+  `watchAgentProcesses`** in their shims (`passive`, `serverChatHost`): the renderer sends them
+  before its first state says where it runs, and a refusal showed as a notice in the conversation.
+  **Not run inside VS Code yet.**
 - **The view closing ends each tab's work with `close('view')`, which does not mark the tab
   closed.** The same `ChatTab` objects are shown again when the view is resolved again, and
   `_closed` is reset only by `start()`, so a tab the view let go of came back closed for good: a
@@ -7606,12 +7625,19 @@ the tab explicitly; **Page address** is the URL and title (`pageTitle` + `plainI
 the title is page-chosen text going into a prompt), plus one line naming the tab by our id (`tabIdOf`) and how the `ai-browser` tools reach it — tools named by suffix (#144), a `browser_state` check before acting because caller pins and sharing override focus, `browser_select_tab` when needed (or a user assignment when sharing prevents selection), and a plain "the server is off" when it is not running (`_tabNote`); **Share page** starts with the same URL, title and MCP note but follows the selected browser tab while it remains in the draft; **the globe button attaches the tab it opens as a page address, and the chip follows it too** — the first `onDidOpenBrowserTab` within 15 s of the press goes to the chat tab it was pressed in (`_awaitOpenedPage`), and tracked attachments have their address, title and active-or-not rebuilt under the same chip id on `onDidChangeBrowserTabState` / `onDidChangeActiveBrowserTab` until the message is sent or the chip removed (`_livePages`, `_refreshLivePages`); `preserveAttachmentReference` carries the existing `@N` to each refreshed chip; closing the browser tab removes its tracked page chips from all chat drafts and refreshes the chat, and the panel opens no tab, so attaches nothing; **File** is the path only, since both agents
 read files themselves.
 
-**What is open is offered, not attached** (asked for): the file in the text editor in front
-(`activeTextEditor`, `file` scheme) and the browser tab in front — only while the active editor
+**What is open is offered, not attached** (asked for): the file in front whatever editor shows it — the text editor
+(`activeTextEditor`, `file` scheme), else the active group's active tab (`frontTabFile`: a custom
+editor such as an image or PDF preview, a notebook, a diff's modified side; asked for; when that
+tab is a webview — the chat opened as an editor tab — the other groups' active tabs) — and the browser tab in front — only while the active editor
 group's active tab *is* a browser editor (`tabGroups.activeTabGroup.activeTab` with no `input`,
 which stays put while focus is in the chat), as a Share page; `userTab` alone kept offering a page
-after the user had switched to a file appear in the composer as **suggestions** — dashed chips
-(`.chip.suggested`) with a leading **+** and no remove button (`_suggestions`, `state.suggestions`).
+after the user had switched to a file appear as **suggestions** (`_suggestions`, `state.suggestions`).
+**Each is a dashed chip with "+" in the row under the message box** (`suggestionNode`, `.chip.suggested`):
+a click on "+" or the name posts `acceptSuggestion`. The toolbar says it too: the page lights the globe
+green with "Pin current browser" first in its menu, and the file or selection lights the "+" green
+(`has-suggestion`) with a green "Attach current file / selection" row in its menu (`suggested`).
+The 0.9.9 inline badges moved suggestions into the toolbar menus only, and an open file then read as
+"not offered at all" (asked for, twice): toolbar hints alone are not enough, the chip is the signal.
 **Lines selected in that editor are offered instead of the file** (asked for): a `selection` chip
 named `<file> · lines N–M` (`line N`, or `N selections` for several), built by `selectionAttachment`
 — the same snapshot "Attach Selection to AI Browser Chat" takes, and the same label. Attached, it
@@ -10972,6 +10998,48 @@ backend routes only the owner thread and its bound child threads into each
 chat; unrelated chats, user terminals and OS processes are not enumerated. Closing a
 read-only output terminal never closes the underlying process.
 
+**Observed processes have a "…" menu: Inspect in VS Code terminal, Copy PID, Stop**
+(`inspectAgentProcess`, editor-only; a double-click on the row inspects too).
+Inspect is a look, never an attach (`src/chat/processInspect.ts`, leaf, under test):
+`AgentProcessMonitor.inspect` revalidates chat and birth identity as `stop` does and
+lists up to 50 descendants from a fresh table; then the OS is asked for the command
+line, folder, CPU, memory and where stdout/stderr go — `ps` + `lsof -F ftn` on macOS,
+`ps` + `/proc/<pid>/fd` on Linux, PowerShell CIM on Windows. **Only output written to
+a regular file is followed** (`FileFollower`, `tail -f` as an ordinary reader, last
+32 KB then appends, re-read on truncation). A pipe, a socket or a terminal is named and
+left alone: a pipe has one reader, and reading it would take the data from the program
+it feeds; a tty belongs to its terminal. Windows exposes no other process's handle
+targets without native code, so there it is details only. Measured on macOS: Claude
+Code's background tasks write their output to `…/tasks/<id>.output`, so Inspect follows
+them live. The command line may carry credentials, so it goes into that local terminal
+only, never into a chat state. File text keeps SGR colours and drops every other escape
+(`terminalSafe`: an OSC 52 in a log must not set the user's clipboard). Input to the
+terminal is ignored. When the monitor stops listing the process, a final read is made
+and "[The process has exited.]" is printed. **The monitor now runs on Windows too**
+(`parseWindowsProcessTable`, CIM with an ISO creation time as the birth identity),
+attributing by ancestry from the CLI the chat started — another process's environment
+is not readable there, so markers never match. Not run on Windows or Linux yet.
+
+**The monitor is cheap unless someone looks** (`samplePace`, `nextSampleDelay`):
+
+| | macOS / Linux | Windows |
+|---|---|---|
+| Bash tab on screen, or an Inspect terminal open (`watch()`) | every 2 s | every 5 s |
+| otherwise, while a chat CLI runs or something is tracked | 5 s, doubling on each sample that changed nothing, up to 60 s | 15 s → 120 s |
+| no CLI, nothing tracked | no timer | no timer |
+
+A sample that changed the list, a Stop, or a command starting or ending
+(`startsOrEndsWork`: a tool call or its result, a task's start or end, a turn's end — on
+every protocol) brings the wait back to the base, and never below a floor (2 s; 5 s on
+Windows). **Do not wake it on every CLI line**: it used to run on each `assistant` message
+and every `item/started`, which read the whole process table about once a second for as
+long as a reply streamed — continuous PowerShell on Windows. The view says the Bash tab is
+open with `watchAgentProcesses` (editor-only, sent once per change, off when the page is
+hidden); the host counts it only while its view is visible. Measured on macOS: one sample
+is about 10 ms (`ps -x` over 416 processes, plus `ps eww` for at most 64 new pids). On
+Windows each sample is a PowerShell start, hence the slower figures. The badge on the Bash
+tab is as fresh as the pace: up to a minute behind while nobody looks.
+
 ### File history and terminal connection fixes
 
 `diffSides` consumes the before/after line counts in numbered unified hunks before
@@ -11000,6 +11068,10 @@ windows remains a local editor action.
 
 Chat Settings → Connections & permissions stores optional per-surface restrictions
 in the application-scoped `aiBrowser.chat.connectionPermissions` user setting.
+Each connection is a card (`connection-permissions-group`, its legend floated inside the box as a
+header with an "N of 11 allowed" count) over a grid of `connection-permission` rows; an unchecked
+row's text is dimmed. The rows are not inside `.feature-settings-row`, so they carry their own
+flex and gap — without them the label is inline and the checkbox sits against its text.
 The host reads it for every command; snapshots expose matching disabled controls.
 Stop remains usable. Attachment-bearing sends are also checked after grants are
 revoked. Writes are serialized, and remote clients cannot modify their own grants.

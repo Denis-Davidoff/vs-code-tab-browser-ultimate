@@ -780,6 +780,8 @@ export function activate(context: vscode.ExtensionContext) {
 			await revealChat();
 			chat.showSettings();
 		}),
+		// Cmd/Ctrl+W bound only while focus is in a chat webview: closes the chat tab, not the editor.
+		vscode.commands.registerCommand('aiBrowser.chat.closeTab', () => ChatViewProvider.closeFocusedTab()),
 		vscode.commands.registerCommand('aiBrowser.chat.allAgents', async () => {
 			await revealChat();
 			chat.showAllAgents();

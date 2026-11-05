@@ -1,5 +1,6 @@
 import { ShellOutput } from './shellOutput';
 import { agentProcesses } from './agentProcesses';
+import { describeOutput, FileFollower, followableOutputs, nodeFiles, readProcessDetails, terminalSafe } from './processInspect';
 import { currentVisibleTurns, windowEntries } from './core/entryWindow';
 import { LinkedChats, ensureChatEntryIds, linkedNoteDigest, readChatLinks, type ChatLink, type LinkedChat } from './linkedChats';
 import { chatConnectionsEnabled } from './core/chatFeatures';
@@ -755,6 +756,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 */
 	public static readonly terminalGrants = new TerminalGrants();
 	private static readonly _surfaces = new Map<string, ChatViewProvider>();
+	/** The surface whose webview has keyboard focus, published as `aiBrowser.chatFocused` for the close-tab keybinding. */
+	private static _focusedSurface: ChatViewProvider | undefined;
 	/** Copied snapshots survive removal from their draft (Cut), sending, and switching surfaces. */
 	private static readonly _attachmentClipboard = new Map<string, Attachment>();
 	private static _sharedServices?: ChatServices;
@@ -1145,11 +1148,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		view.onDidChangeVisibility(() => {
 			this._post();
 			if (view.visible && this._gitStale) { this._gitEventRefresh(); }
+			this._syncProcessWatch();
 		}, undefined, this._subscriptions);
 		view.onDidDispose(() => {
 			if (this._view === view) {
 				this._stateSurfaces.dispose();
 				this._view = undefined;
+				this._bashOpen = false; this._syncProcessWatch();
+				// A webview torn down while it had focus sends no blur: left set, the
+				// key would keep Cmd/Ctrl+W from closing editors anywhere.
+				if (ChatViewProvider._focusedSurface === this) {
+					ChatViewProvider._focusedSurface = undefined;
+					void vscode.commands.executeCommand('setContext', 'aiBrowser.chatFocused', false);
+				}
 				for (const surface of ChatViewProvider._surfaces.values()) { surface._post(); }
 				this._viewReady = false;
 				// The terminals' shells go on, as they do for a hidden view; what was
@@ -1518,6 +1529,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'stopAgentProcess':
 				try { await agentProcesses.stop(message.chatId, message.id); }
 				catch (error) { this._postMessage({ type: 'toolbarError', message: error instanceof Error ? error.message : String(error) }); }
+				return;
+			case 'chatFocus':
+				if (message.focused === true) {
+					ChatViewProvider._focusedSurface = this;
+					void vscode.commands.executeCommand('setContext', 'aiBrowser.chatFocused', true);
+				} else if (ChatViewProvider._focusedSurface === this) {
+					ChatViewProvider._focusedSurface = undefined;
+					void vscode.commands.executeCommand('setContext', 'aiBrowser.chatFocused', false);
+				}
+				return;
+			case 'watchAgentProcesses':
+				this._bashOpen = message.on === true;
+				this._syncProcessWatch();
+				return;
+			case 'inspectAgentProcess':
+				await this._inspectProcess(message.chatId, message.id);
 				return;
 			case 'connectChat':
 				if (!chatConnectionsEnabled) { return; }
@@ -4832,6 +4859,93 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		terminal.show(false);
 	}
 
+	private readonly _processViews = new Map<string, { terminal: vscode.Terminal; dispose(): void }>();
+	private _bashOpen = false;
+	private _processWatch?: { dispose(): void };
+
+	/** The fast pace for as long as this surface shows its Bash tab on screen. */
+	private _syncProcessWatch(): void {
+		const want = this._bashOpen && !this._disposed && !!this._view?.visible;
+		if (want && !this._processWatch) { this._processWatch = agentProcesses.watch(); }
+		else if (!want && this._processWatch) { this._processWatch.dispose(); this._processWatch = undefined; }
+	}
+
+	/**
+	 * An observed process, looked at and never touched: its details from the OS,
+	 * then its output when that goes to a regular file, read as `tail -f` would.
+	 * A pipe or a terminal is said to be one and left alone — reading a pipe takes
+	 * the data from the program it feeds. Opening it again shows fresh details.
+	 * Local only: the command line goes to this terminal, never into a chat state.
+	 */
+	private async _inspectProcess(chatId: unknown, id: unknown): Promise<void> {
+		if (typeof chatId !== 'string' || typeof id !== 'string') { return; }
+		let found: Awaited<ReturnType<typeof agentProcesses.inspect>>;
+		try { found = await agentProcesses.inspect(chatId, id); }
+		catch (error) { this._postMessage({ type: 'toolbarError', message: error instanceof Error ? error.message : String(error) }); return; }
+		const details = await readProcessDetails(found.row.pid);
+		const key = JSON.stringify([chatId, id]);
+		this._processViews.get(key)?.dispose();
+		const writes = new vscode.EventEmitter<string>();
+		const followers: FileFollower[] = [];
+		let watch: ReturnType<typeof setInterval> | undefined;
+		let opened = false; let done = false;
+		// An open Inspect terminal is someone looking: the exit shows within seconds.
+		const watching = agentProcesses.watch();
+		const write = (text: string) => { if (opened && !done) { writes.fire(text); } };
+		const line = (text = '') => write(terminalSafe(text) + '\r\n');
+		const cleanup = () => {
+			if (done) { return; }
+			done = true;
+			watching.dispose();
+			for (const follower of followers) { follower.stop(); }
+			if (watch) { clearInterval(watch); }
+			closed.dispose(); writes.dispose();
+			if (this._processViews.get(key)?.terminal === terminal) { this._processViews.delete(key); }
+		};
+		const files = followableOutputs(details.outputs);
+		const pty: vscode.Pseudoterminal = {
+			onDidWrite: writes.event,
+			open: () => {
+				opened = true;
+				line(`\x1b[1mProcess ${found.row.pid}\x1b[0m · ${found.row.command} · read only`);
+				line(`Started by ${found.source}${found.detached ? ' · detached' : ''}${details.state ? ` · state ${details.state}` : ''}`);
+				if (details.elapsed || details.cpu || details.memory) { line([details.elapsed && `running ${details.elapsed}`, details.cpu && `CPU ${details.cpu}`, details.memory && `memory ${details.memory}`].filter(Boolean).join(' · ')); }
+				if (details.cwd) { line(`Folder: ${details.cwd}`); }
+				if (details.commandLine) { line(`Command: ${details.commandLine}`); }
+				for (const output of details.outputs) { line(describeOutput(output)); }
+				if (found.children.length) {
+					line(`Child processes (${found.children.length}${found.children.length >= 50 ? '+' : ''}):`);
+					for (const child of found.children.slice(0, 20)) { line(`  ${child.pid}  ${child.command}`); }
+				}
+				line();
+				if (!files.length) {
+					line('\x1b[2mThis process does not write its output to a file, so there is nothing to follow without taking it from its reader.\x1b[0m');
+					line('\x1b[2mTo watch such a command, ask the agent to run it with its output sent to a log file (command > out.log 2>&1).\x1b[0m');
+				}
+				for (const path of files) {
+					const follower = new FileFollower(path, write, nodeFiles);
+					followers.push(follower);
+					line(`\x1b[2m── ${path} ──\x1b[0m`);
+					void follower.start();
+				}
+				watch = setInterval(() => {
+					if (agentProcesses.alive(chatId, id)) { return; }
+					clearInterval(watch); watch = undefined;
+					void Promise.all(followers.map(f => f.tick())).then(() => {
+						for (const follower of followers) { follower.stop(); }
+						line(); line('\x1b[2m[The process has exited.]\x1b[0m');
+					});
+				}, 2000);
+			},
+			close: () => { cleanup(); },
+			handleInput: () => { /* Read only: nothing typed here reaches the process. */ },
+		};
+		const terminal = vscode.window.createTerminal({ name: `Process ${found.row.pid}: ${found.row.command.replace(/[\x00-\x1f\x7f]/g, ' ').split(/[\\/]/).pop()!.slice(0, 40)}`, pty });
+		const closed = vscode.window.onDidCloseTerminal(t => { if (t === terminal) { cleanup(); } });
+		this._processViews.set(key, { terminal, dispose: () => { cleanup(); terminal.dispose(); } });
+		terminal.show(false);
+	}
+
 	private _refreshShellOutputs(): void {
 		for (const view of this._shellOutputViews?.values() ?? []) { view.refresh(); }
 	}
@@ -5264,6 +5378,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			}
 		}
 		this._postMessage({ type: 'allAgents', chats, refresh });
+	}
+
+	/**
+	 * Cmd/Ctrl+W while focus is in a chat (`aiBrowser.chatFocused`): the tab in
+	 * front of that surface closes, as its × would — the view asks first while it
+	 * works. The surface is the focused one, not necessarily the side bar.
+	 */
+	public static closeFocusedTab(): void {
+		const view = ChatViewProvider._focusedSurface;
+		if (view && !view._disposed) { view._postMessage({ type: 'closeFrontTab' }); }
 	}
 
 	/** The title bar's cup; the popup is the view's own, so it pauses no browser tab. */
@@ -6740,7 +6864,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const attached = this._active.attachments;
 		const out: { chip: AttachmentChip; accept: () => Attachment | undefined | Promise<Attachment | undefined> }[] = [];
 		const editor = vscode.window.activeTextEditor;
-		const uri = editor?.document.uri;
+		// The file in front, whatever editor shows it: a text editor, or failing
+		// that the active group's active tab — an image preview, a PDF, a
+		// notebook, a diff (its modified side), any custom editor.
+		const uri = editor?.document.uri.scheme === 'file' ? editor.document.uri : frontTabFile() ?? editor?.document.uri;
 		// Lines selected in the editor are offered instead of the whole file.
 		const selected = editor && editorSelectionKey(editor);
 		if (editor && selected) {
@@ -8235,6 +8362,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._videoEncoder?.host.dispose();
 		this._disposed = true;
 		for (const view of this._shellOutputViews.values()) { view.dispose(); }
+		for (const view of [...(this._processViews?.values() ?? [])]) { view.dispose(); }
+		this._processWatch?.dispose(); this._processWatch = undefined;
 		for (const request of this._draftRequests.values()) { clearTimeout(request.timer); request.reject(new Error('The source chat was closed.')); }
 		this._draftRequests.clear();
 		ChatViewProvider._surfaces.delete(this._surfaceId);
@@ -8250,6 +8379,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._livePages.clear();
 		this._voiceCancel();
 		if (!this._panelIdentity) { void vscode.commands.executeCommand('setContext', 'aiBrowser.keepAwakeActive', false); }
+		if (ChatViewProvider._focusedSurface === this) {
+			ChatViewProvider._focusedSurface = undefined;
+			void vscode.commands.executeCommand('setContext', 'aiBrowser.chatFocused', false);
+		}
 		// Shared backends own live sessions of tabs moved into other surfaces.
 		this._services.views.delete(this);
 		this._publishSessions();
@@ -8367,6 +8500,32 @@ function selectionAttachment(editor: vscode.TextEditor): Attachment | string | u
 		return vscode.l10n.t("The selection is too large to attach (maximum 1 MB).");
 	}
 	return { chip: { id: generateUuid(), kind: 'selection', label: selectionLabel(editor), iconName: path.basename(editor.document.uri.path) || undefined }, text, selectionKey: key };
+}
+
+/**
+ * The local file the active group's active tab shows, whatever its editor:
+ * text, a custom editor (images, PDFs), a notebook, or a diff's modified side.
+ * Webviews, terminals and the browser editor name no file and answer nothing.
+ */
+function frontTabFile(): vscode.Uri | undefined {
+	const fileOf = (tab: vscode.Tab | undefined): vscode.Uri | undefined => {
+		const input = tab?.input;
+		const uri = input instanceof vscode.TabInputText || input instanceof vscode.TabInputCustom || input instanceof vscode.TabInputNotebook ? input.uri
+			: input instanceof vscode.TabInputTextDiff || input instanceof vscode.TabInputNotebookDiff ? input.modified
+				: undefined;
+		return uri?.scheme === 'file' ? uri : undefined;
+	};
+	const groups = vscode.window.tabGroups;
+	const active = groups.activeTabGroup.activeTab;
+	// A chat opened as an editor tab is itself the active tab: then the file in
+	// front is the one another group shows.
+	if (active?.input instanceof vscode.TabInputWebview) {
+		for (const group of groups.all) {
+			const uri = group !== groups.activeTabGroup ? fileOf(group.activeTab) : undefined;
+			if (uri) { return uri; }
+		}
+	}
+	return fileOf(active);
 }
 
 function fileAttachment(uri: vscode.Uri, folder: string | undefined, directory: boolean): Attachment {

@@ -1935,6 +1935,7 @@ button {
 .toolbar-settings { gap: 2px; justify-content: center; justify-self: center; max-width: 100%; }
 .toolbar-attachments { flex: none; width: max-content; }
 .toolbar-attachments .has-suggestion > .codicon-globe,
+.toolbar-attachments .has-suggestion > .codicon-add,
 .menu-item.suggested .menu-label,
 .menu-item.suggested .menu-icon { color: color-mix(in srgb, var(--vscode-charts-green, #74c991) 65%, var(--fg-2)); }
 
@@ -7134,18 +7135,66 @@ body.vv-locked {
 .citation-source > span { overflow-wrap: anywhere; white-space: pre-wrap; }
 .rich-highlight { outline: 2px solid var(--vscode-focusBorder, #609ddb); outline-offset: 3px; }
 .rich-navigation-status { position: fixed; bottom: 20px; left: 20px; right: 20px; z-index: 10001; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--fg); }
+/* Connections & permissions: one card per connection, a header inside it, then the switches. */
 .connection-permissions-group {
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: 1px solid var(--set-line, color-mix(in srgb, var(--vscode-foreground) 10%, transparent));
+	border-radius: var(--set-radius, 8px);
+	background: var(--set-surface, transparent);
+	overflow: hidden;
+}
+/* `float` puts a legend inside the box instead of on its border. */
+.connection-permissions-head {
+	float: left;
+	box-sizing: border-box;
+	width: 100%;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 10px 14px;
+	border-bottom: 1px solid var(--set-line, transparent);
+}
+.connection-permissions-head + * { clear: both; }
+.connection-permissions-icon { flex: none; font-size: 16px; color: var(--vscode-textLink-foreground, var(--accent)); }
+.connection-permissions-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.connection-permissions-title strong { font-size: 12.5px; font-weight: 600; }
+.connection-permissions-title span { font-size: 11px; color: var(--vscode-descriptionForeground); }
+.connection-permissions-count {
+	flex: none;
+	padding: 2px 8px;
+	border-radius: 999px;
+	font-size: 11px;
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-descriptionForeground);
+	background: color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
+}
+.connection-permissions-count.restricted {
+	color: var(--vscode-charts-orange, #d18616);
+	background: color-mix(in srgb, var(--vscode-charts-orange, #d18616) 14%, transparent);
+}
+.connection-permissions-list {
 	display: grid;
-	gap: 8px;
-	margin: 12px 0;
-	padding: 12px;
-	border: 1px solid var(--vscode-widget-border, rgba(127, 127, 127, 0.3));
-	border-radius: 8px;
+	grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+	gap: 2px 8px;
+	padding: 6px;
 }
-.connection-permissions-group legend {
-	padding: 0 6px;
-	font-weight: 600;
+.feature-settings-content .connection-permission {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 7px 8px;
+	border-radius: 6px;
+	font-size: 12px;
+	line-height: 1.35;
+	cursor: pointer;
+	transition: background-color .12s ease;
 }
+.connection-permission:hover { background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent); }
+.connection-permission:has(input:focus-visible) { box-shadow: inset 0 0 0 1px var(--vscode-focusBorder); }
+.connection-permission > span { min-width: 0; transition: color .12s ease; }
+.connection-permission:has(input:not(:checked)) > span { color: var(--vscode-descriptionForeground); }
 
 /* the emoji a chat tab can be labelled with */
 /* `.open` only: a bare `.mark-popup { display: grid }` comes after `.popup { display: none }` and kept it on screen. */

@@ -902,7 +902,27 @@ function scrollsSideways(target: EventTarget | null, dx: number, boundary: HTMLE
 	return false;
 }
 
+/**
+ * A tab switch changes the composer's height under the thread. A thread that was at its end
+ * stays at its end while the height moves (asked for); one scrolled up is left where it is.
+ */
+let threadPinFrame: number | undefined;
+function pinThreadToEnd(ms: number): void {
+	if (threadPinFrame !== undefined) { cancelAnimationFrame(threadPinFrame); }
+	const until = performance.now() + ms;
+	const step = () => {
+		thread.scrollTop = thread.scrollHeight;
+		threadPinFrame = performance.now() < until ? requestAnimationFrame(step) : undefined;
+	};
+	step();
+}
+for (const ev of ['wheel', 'pointerdown', 'touchstart'] as const) {
+	// The user scrolling during the animation takes the thread back.
+	thread.addEventListener(ev, () => { if (threadPinFrame !== undefined) { cancelAnimationFrame(threadPinFrame); threadPinFrame = undefined; } }, { passive: true });
+}
+
 function setComposerTab(tab: ComposerTab, save = true): void {
+	const threadAtEnd = tab !== composerTab && thread.scrollHeight - thread.scrollTop - thread.clientHeight < 60;
 	const animate = save && tab !== composerTab && !reducedMotion.matches;
 	// Capture the displayed height before cancelling: a rapid switch continues where it is now.
 	const fromHeight = animate ? composer.getBoundingClientRect().height : 0;
@@ -920,6 +940,7 @@ function setComposerTab(tab: ComposerTab, save = true): void {
 	composerBashPanel.hidden = tab !== 'bash';
 	composerGithubPanel.hidden = tab !== 'github';
 	filesPanel.hidden = tab !== 'files';
+	syncProcessWatch();
 	if (tab === 'bash') { renderComposerBash(); }
 	if (tab === 'github') { requestGithub(); }
 	if (tab === 'files') { openFilesTab(); }
@@ -943,6 +964,7 @@ function setComposerTab(tab: ComposerTab, save = true): void {
 			composerHeightTimer = setTimeout(stopComposerHeightAnimation, 250);
 		}
 	}
+	if (threadAtEnd) { pinThreadToEnd(animate ? 320 : 0); }
 }
 for (const [name, b] of Object.entries(composerTabButtons) as [ComposerTab, HTMLButtonElement][]) {
 	// A press keeps focus where it is: on a phone, moving it to the button closes the keyboard and the box reopens it.
@@ -953,6 +975,13 @@ for (const [name, b] of Object.entries(composerTabButtons) as [ComposerTab, HTML
 const composerTabKeys: Record<string, ComposerTab> = { KeyC: 'chat', KeyS: 'skills', KeyA: 'activity', KeyH: 'history', KeyO: 'history', KeyB: 'bash', KeyG: 'github', KeyF: 'files' };
 document.addEventListener('keydown', e => {
 	if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing) { return; }
+	if (e.code === 'KeyW' && !(e.target as Element | null)?.closest?.('.terminal-main')) {
+		// Option+W closes the chat tab in front, as Cmd+W does through the contributed keybinding.
+		e.preventDefault();
+		e.stopPropagation();
+		closeFrontTab();
+		return;
+	}
 	const tab = composerTabKeys[e.code];
 	if (!tab || composerTabs.hidden || !composerTabShown(tab) || (e.target as Element | null)?.closest?.('.terminal-main')) { return; }
 	e.preventDefault();
@@ -1170,7 +1199,48 @@ let bashBadgeTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingBashReveal: { chatId: string; id: string } | undefined;
 const bashRunningBadge = el('span', { class: 'composer-tab-count agents' });
 composerTabBash.append(bashRunningBadge);
+/**
+ * Tells the host whether the Bash tab is open, once per change: only then is
+ * the process table read every couple of seconds; otherwise rarely. Editor
+ * only — Chrome and the website show no observed processes.
+ */
+let processWatchSent: boolean | undefined;
+function syncProcessWatch(): void {
+	const on = composerTab === 'bash' && !!state && !state.surface && !document.hidden;
+	if (on === processWatchSent || !state || state.surface) { return; }
+	processWatchSent = on;
+	vscode.postMessage({ type: 'watchAgentProcesses', on } satisfies ViewToHost);
+}
+document.addEventListener('visibilitychange', syncProcessWatch);
+/**
+ * Focus in this webview, told to the host for `aiBrowser.chatFocused`: the
+ * Cmd/Ctrl+W keybinding closes a chat tab only while the chat has the keyboard,
+ * and goes back to closing the editor everywhere else. Editor only.
+ */
+function sendChatFocus(focused: boolean): void {
+	if (state?.surface) { return; }
+	vscode.postMessage({ type: 'chatFocus', focused } satisfies ViewToHost);
+}
+window.addEventListener('focus', () => sendChatFocus(true));
+window.addEventListener('blur', () => sendChatFocus(false));
+if (document.hasFocus()) { sendChatFocus(true); }
+/**
+ * Cmd/Ctrl+W from the host: the tab in front closes as its × would — the same
+ * inline question while it works or holds a queue. A lone empty conversation is
+ * left alone, since closing it would only open another empty one.
+ */
+function closeFrontTab(): void {
+	if (!state) { return; }
+	const strip = stripOf(state);
+	const front = strip.find(t => t.id === frontStripId(state!));
+	if (!front) { return; }
+	if (strip.length === 1 && !front.terminal && !front.agent && !front.busy && !front.queued && !front.skillRuns) { return; }
+	const node = tabNodes.get(front.id);
+	if (!node || node.close.disabled) { return; }
+	node.close.click();
+}
 function renderComposerBash(): void {
+	syncProcessWatch();
 	const loaded = (state?.entries ?? []).filter((e): e is ToolEntry => e.kind === 'tool' && e.tool === 'command');
 	const commands = [...new Map([...(state?.runningShells ?? []), ...loaded].map(e => [e.id, e])).values()].sort((a, b) => a.startedAt - b.startedAt);
 	if (pendingBashReveal) {
@@ -1252,18 +1322,31 @@ function renderComposerBash(): void {
 	if (state?.agentProcesses) {
 		const snapshot = state.agentProcesses;
 		composerBashList.append(clHead('Observed processes · this chat', observed.length));
-		composerBashList.append(clEmpty('info', !snapshot.supported ? 'Process monitoring is available on macOS and Linux.'
+		composerBashList.append(clEmpty('info', !snapshot.supported ? 'Process monitoring is not available on this system.'
 			: snapshot.unavailable ? 'Process checks are unavailable. The last observed list may be stale; checks will retry.'
 			: 'Processes attributed to this chat and seen for at least 5 seconds. Experimental monitoring: cleared markers or delegated launches can escape observation.'));
 		for (const item of observed.toReversed()) {
 			const row = el('div', { class: 'cl-row', title: item.command }, ...clRow(el('span', { class: 'cl-lead cl-icon' }, icon('terminal')),
 				item.command, [el('span', { text: `PID ${item.pid}` }), el('span', { text: item.source }),
 					el('span', { text: item.detached ? 'Detached · observed running' : 'Observed running' })]));
-			const stop = button([icon('debug-stop')], { class: 'cl-answer', title: `Stop PID ${item.pid} (SIGTERM)` });
+			const options = button([icon('ellipsis')], { class: 'cl-answer cl-more', title: 'Look inside this process' });
 			row.dataset.agentProcessId = item.id;
+			options.setAttribute('aria-label', `Options for process ${item.pid}`);
+			const inspect = () => { if (state) { post({ type: 'inspectAgentProcess', chatId: state.chatId, id: item.id }); } };
+			row.addEventListener('dblclick', inspect);
+			options.addEventListener('click', () => {
+				const chatId = state?.chatId;
+				if (!chatId) { return; }
+				openMenu(options, [
+					{ icon: 'terminal', label: 'Inspect in VS Code terminal', description: 'Read only · details, and its output when it goes to a file', command: 'inspectAgentProcess', run: inspect },
+					{ icon: 'copy', label: 'Copy PID', run: () => post({ type: 'copy', text: String(item.pid) }) },
+					{ icon: 'debug-stop', label: `Stop PID ${item.pid}`, description: 'Asks it to end (SIGTERM)', command: 'stopAgentProcess', run: () => post({ type: 'stopAgentProcess', chatId, id: item.id }) },
+				], `Process ${item.pid}`);
+			});
+			const stop = button([icon('debug-stop')], { class: 'cl-answer', title: `Stop PID ${item.pid} (SIGTERM)` });
 			stop.setAttribute('aria-label', `Stop process ${item.pid}`);
 			stop.addEventListener('click', () => { if (state) { post({ type: 'stopAgentProcess', chatId: state.chatId, id: item.id }); } });
-			composerBashList.append(el('div', { class: 'cl-row-pair' }, row, stop));
+			composerBashList.append(el('div', { class: 'cl-row-pair' }, row, options, stop));
 		}
 		if (snapshot.truncated) { composerBashList.append(clEmpty('info', 'The process list reached its monitoring limit.')); }
 	}
@@ -1283,7 +1366,7 @@ function focusKeyIn(node: HTMLElement): string | undefined {
 	const row = pair?.querySelector<HTMLElement>('[data-shell-id],[data-agent-process-id]');
 	if (!row) { return undefined; }
 	const attr = row.dataset.shellId !== undefined ? `data-shell-id="${CSS.escape(row.dataset.shellId)}"` : `data-agent-process-id="${CSS.escape(row.dataset.agentProcessId ?? '')}"`;
-	return node.classList.contains('cl-answer') ? `.cl-row-pair:has([${attr}]) .cl-answer` : `[${attr}]`;
+	return node.classList.contains('cl-answer') ? `.cl-row-pair:has([${attr}]) .cl-answer${node.classList.contains('cl-more') ? '.cl-more' : ':not(.cl-more)'}` : `[${attr}]`;
 }
 composerBashList.addEventListener('pointerdown', () => { bashPressed = true; });
 window.addEventListener('pointerup', () => { if (!bashPressed) { return; } bashPressed = false; if (bashStale) { bashStale = false; setTimeout(renderComposerBash, 0); } }, true);
@@ -3138,6 +3221,9 @@ vscode.onMessage(message => {
 		case 'openSleep':
 			buildSleepPopup(); renderSleep(); openSleepPopup();
 			return;
+		case 'closeFrontTab':
+			closeFrontTab();
+			return;
 		case 'hydrateDrafts':
 			Object.assign(drafts, message.drafts);
 			return;
@@ -4180,19 +4266,26 @@ function tabNode(t: StripTab): TabNode {
 /**
  * A conversation tab clicked and not yet in front: its icon spins until a state
  * names it as the active tab (the thread is drawn from that state), or 10 s pass.
- * Only a class on the tab, so nothing is rebuilt (#365).
+ * The spinner shows only after `tabLoadingDelayMs`: most tabs load sooner, and a
+ * spinner flashing for a moment read as noise (asked for). Only a class on the tab,
+ * so nothing is rebuilt (#365).
  */
-let loadingTab: { id: string; timer: ReturnType<typeof setTimeout> } | undefined;
+const tabLoadingDelayMs = 1200;
+let loadingTab: { id: string; timer: ReturnType<typeof setTimeout>; show: ReturnType<typeof setTimeout> } | undefined;
 
 function markTabLoading(id: string): void {
 	clearTabLoading();
-	tabNodes.get(id)?.root.classList.add('loading');
-	loadingTab = { id, timer: setTimeout(clearTabLoading, 10_000) };
+	loadingTab = {
+		id,
+		timer: setTimeout(clearTabLoading, 10_000),
+		show: setTimeout(() => tabNodes.get(id)?.root.classList.add('loading'), tabLoadingDelayMs),
+	};
 }
 
 function clearTabLoading(): void {
 	if (!loadingTab) { return; }
 	clearTimeout(loadingTab.timer);
+	clearTimeout(loadingTab.show);
 	tabNodes.get(loadingTab.id)?.root.classList.remove('loading');
 	loadingTab = undefined;
 }
@@ -4231,7 +4324,7 @@ function fillTab(node: TabNode, agent: string | undefined): void {
 	const description = `${agent ? `${t.title} — ${agent}${t.model ? ` · ${t.model}` : ''}` : t.title}\n${t.status ? tabMarks[t.status] : 'New chat'}${agentsOf(t) ? ` · ${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} running` : ''}${t.chrome ? ' · open in Google Chrome' : ''}${badge ? ` · ${badge.title}` : ''}`;
 	node.label.setAttribute('aria-label', description);
 	node.label.title = `${description}\nDouble-click to rename. Drag to reorder. Right-click for chat actions.`;
-	node.close.title = t.busy ? 'Close (stops what it is doing)' : 'Close';
+	node.close.title = `${t.busy ? 'Close (stops what it is doing)' : 'Close'} (${isMacView ? '⌥W' : 'Alt+W'})`;
 }
 
 /** Shared with the Exchange website: a globe, accented while a website viewer holds control. */
@@ -7023,6 +7116,8 @@ let attachmentsShown = '';
 
 function renderAttachments(s: ChatViewState): void {
 	browserButton.classList.toggle('has-suggestion', s.suggestions.some(chip => chip.kind === 'sharedPage'));
+	// The file (or selection) in front is offered from "+", lit green like the globe for the page.
+	plusButton.classList.toggle('has-suggestion', s.suggestions.some(chip => chip.kind !== 'sharedPage'));
 	// The state is posted every 40 ms while any tab streams; rebuilding the
 	// chips each time swallowed a click on one whose press outlasted a post,
 	// and took keyboard focus off it.
@@ -7039,7 +7134,7 @@ function renderAttachments(s: ChatViewState): void {
 	}
 	attachmentsShown = shown;
 	// Draft attachments live in the text as tokens (`[@N label]`, see `syncAttachmentTokens`); the row
-	// keeps the terminals pinned to the conversation. Suggestions live in the toolbar menus.
+	// keeps the suggestions, linked chats, pinned browser tabs and terminals.
 	const browsers = (s.access?.tabs ?? []).filter(tab => tab.owner === 'this');
 	const linked = (s.linkedChats ?? []).map(chat => {
 		const editor = !s.surface || s.surface === 'editor';
@@ -7053,11 +7148,25 @@ function renderAttachments(s: ChatViewState): void {
 		open.addEventListener('click', () => post({ type: 'connectChat', chatId: s.chatId, targetChatId: chat.chatId }));
 		return el('span', { class: 'chip', title: access }, remove, open);
 	});
-	attachmentsRow.replaceChildren(...linked, ...browsers.map(browserPinNode), ...s.attachments.filter(isPinChip).map(pinChipNode));
-	attachmentsRow.hidden = !linked.length && !browsers.length && !s.attachments.some(isPinChip);
+	// What is open in front (a file of any editor, the selection, the browser page) is offered here
+	// as a dashed chip with "+": a click attaches it. The toolbar's green "+" and globe say the same.
+	const suggested = s.suggestions.map(suggestionNode);
+	attachmentsRow.replaceChildren(...suggested, ...linked, ...browsers.map(browserPinNode), ...s.attachments.filter(isPinChip).map(pinChipNode));
+	attachmentsRow.hidden = !suggested.length && !linked.length && !browsers.length && !s.attachments.some(isPinChip);
 	autosize();
 	toolbarLayoutShape = '';
 	scheduleToolbarLayout();
+}
+
+/** A suggestion chip: not attached yet; "+" or a click on the name attaches it (the host re-reads what is open now). */
+function suggestionNode(chip: AttachmentChip): HTMLElement {
+	const what = chip.kind === 'sharedPage' ? 'this page' : chip.kind === 'selection' ? 'this selection' : 'this file';
+	const accept = () => post({ type: 'acceptSuggestion', id: chip.id });
+	const add = button([icon('add')], { class: 'chip-remove chip-add', title: `Attach ${what} to the message` });
+	add.addEventListener('click', accept);
+	const open = button([chipIcon(chip), el('span', { class: 'chip-label', text: chip.label })], { class: 'chip-open', title: `Open in front — click to attach ${what}` });
+	open.addEventListener('click', accept);
+	return el('span', { class: 'chip suggested' }, add, open);
 }
 
 /** Browser bindings live in Access, alongside terminal pins, and never enter the draft. */
@@ -11476,7 +11585,7 @@ plusButton.addEventListener('click', () => {
 		: !state.hasBrowserTab ? 'Open a page in the browser first' : undefined;
 	const suggestions: MenuItem[] = (state?.suggestions ?? []).filter(chip => chip.kind !== 'sharedPage').map(chip => ({
 		icon: attachmentIcon(chip.kind), label: chip.kind === 'selection' ? 'Attach current selection' : 'Attach current file',
-		description: chip.label, run: () => post({ type: 'acceptSuggestion', id: chip.id }),
+		description: chip.label, suggested: true, run: () => post({ type: 'acceptSuggestion', id: chip.id }),
 	}));
 	const chatItems: MenuItem[] = chatConnectionsEnabled && (!state?.surface || state.surface === 'editor') ? [{ icon: 'comment-discussion', label: 'Connect a chat…', run: () => { if (state) { post({ type: 'connectChat', chatId: state.chatId }); } } }] : [];
 	openMenu(plusButton, [...chatItems, ...suggestions, ...browserMenuItems(), ...attachItems.map(item => ({
@@ -12729,25 +12838,43 @@ function createConnectionPermissionSettings(): HTMLElement {
 	const content = el('div');
 	content.append(el('p', { text: 'Chrome on this computer is a trusted interface. Supported actions are enabled by default. Use these switches only to restrict a connection type. Exchange keeps its own settings. Stop always remains available.' }));
 	const boxes: { surface: 'chrome' | 'exchange'; group: ConnectionPermission; input: HTMLInputElement }[] = [];
+	const counts: { surface: 'chrome' | 'exchange'; node: HTMLElement }[] = [];
+	const groups = Object.entries(connectionPermissionGroups) as [ConnectionPermission, string][];
 	for (const surface of ['chrome', 'exchange'] as const) {
 		const section = el('fieldset', { class: 'connection-permissions-group' });
-		section.append(el('legend', { text: surface === 'chrome' ? 'Chrome · this computer' : 'Exchange · website' }));
-		for (const [group, label] of Object.entries(connectionPermissionGroups) as [ConnectionPermission, string][]) {
+		const count = el('span', { class: 'connection-permissions-count' });
+		counts.push({ surface, node: count });
+		section.append(el('legend', { class: 'connection-permissions-head' },
+			icon(surface === 'chrome' ? 'browser' : 'globe', 'connection-permissions-icon'),
+			el('span', { class: 'connection-permissions-title' },
+				el('strong', { text: surface === 'chrome' ? 'Chrome' : 'Exchange' }),
+				el('span', { text: surface === 'chrome' ? 'Side panel on this computer' : 'The website' })),
+			count));
+		const list = el('div', { class: 'connection-permissions-list' });
+		for (const [group, label] of groups) {
 			const box = el('input'); box.type = 'checkbox';
 			boxes.push({ surface, group, input: box });
-			box.addEventListener('change', () => post({ type: 'setConnectionPermission', surface, group, allowed: box.checked }));
-			section.append(el('label', { class: 'openrouter-check' }, box, el('span', { text: label })));
+			box.addEventListener('change', () => { post({ type: 'setConnectionPermission', surface, group, allowed: box.checked }); showCounts(); });
+			list.append(el('label', { class: 'connection-permission' }, box, el('span', { text: label })));
 		}
+		section.append(list);
 		content.append(section);
 	}
-	const render = () => {
-		if (!content.isConnected) { return; }
+	const showCounts = () => {
+		for (const { surface, node } of counts) {
+			const on = boxes.filter(b => b.surface === surface && b.input.checked).length;
+			node.textContent = on === groups.length ? 'All allowed' : `${on} of ${groups.length} allowed`;
+			node.classList.toggle('restricted', on < groups.length);
+		}
+	};
+	const fill = () => {
 		const permissions = readConnectionPermissions(state?.connectionPermissions);
 		for (const box of boxes) { box.input.checked = permissions[box.surface][box.group]; }
+		showCounts();
 	};
+	const render = () => { if (content.isConnected) { fill(); } };
 	connectionPermissionRender = render;
-	const permissions = readConnectionPermissions(state?.connectionPermissions);
-	for (const box of boxes) { box.input.checked = permissions[box.surface][box.group]; }
+	fill();
 	content.append(el('p', { class: 'feature-settings-note', text: 'These switches restrict supported actions. Project file access and terminal access have additional controls below. Permissions for agent tools and browser pages remain separate.' }));
 	return content;
 }

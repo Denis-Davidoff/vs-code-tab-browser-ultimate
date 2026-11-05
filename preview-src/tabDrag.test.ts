@@ -64,7 +64,7 @@ test('compact tab metadata retains identity and reports status and capped agent 
 		tabMark: (status: string) => element('span', { status }),
 		tabMarks: { working: 'Working', waiting: 'Waiting', read: 'Finished', unread: 'Unread', failed: 'Failed' },
 		agentsOf: (t: { agents: number; skillRuns: number }) => t.agents + t.skillRuns,
-		conversationBadge,
+		conversationBadge, isMacView: true,
 	});
 	for (const status of ['working', 'waiting', 'read', 'unread', 'failed']) {
 		const children: ReturnType<typeof element>[] = [];
@@ -92,7 +92,7 @@ test('a conversation tab with pinned terminals shows their count and says which 
 	});
 	const fill = runInNewContext(transpileModule(body + '\nfillTab;', {}).outputText, {
 		el: element, icon: (name: string) => element('i', { class: name }),
-		tabMark: () => undefined, tabMarks: {}, conversationBadge,
+		tabMark: () => undefined, tabMarks: {}, conversationBadge, isMacView: true,
 		agentsOf: (t: { agents: number; skillRuns: number }) => t.agents + t.skillRuns,
 	});
 	const run = (terminals?: { id: string; name: string; status: string }[]) => {

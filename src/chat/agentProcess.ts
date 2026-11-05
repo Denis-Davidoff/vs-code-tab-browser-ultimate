@@ -6,7 +6,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as vscode from 'vscode';
 import { LineSplitter, parseLine } from './agentProtocol';
-import { agentProcesses, processOwnerVariable } from './agentProcesses';
+import { agentProcesses, processOwnerVariable, startsOrEndsWork } from './agentProcesses';
 
 /**
  * A CLI that speaks one JSON object per line over stdin and stdout.
@@ -76,7 +76,7 @@ export class JsonLineProcess implements vscode.Disposable {
 			for (const line of this._lines.push(chunk)) {
 				const message = parseLine(line);
 				if (message) {
-					if (message.method === 'item/started' || message.method === 'item/completed' || message.type === 'assistant' || message.type === 'result') { agentProcesses.commandChanged(); }
+					if (startsOrEndsWork(message)) { agentProcesses.commandChanged(); }
 					this._onMessage.fire(message);
 				}
 			}
@@ -161,3 +161,4 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, what: string): P
 		}),
 	]).finally(() => clearTimeout(timer));
 }
+
