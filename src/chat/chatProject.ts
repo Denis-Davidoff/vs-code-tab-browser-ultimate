@@ -17,6 +17,7 @@ export interface SavedChatTabs {
 	folders?: unknown;
 	repos?: unknown;
 	ultracodes?: unknown;
+	pinned?: unknown;
 }
 
 /**

@@ -3,6 +3,7 @@ import type { ResultBlock, JsonValue, ChatRelation, RichAction, CitationTarget, 
 import type { VisualizationSnapshot } from '../src/chat/visualizationProtocol';
 import { updateVisualizationViews } from './visualizationViews';
 import type { ArtifactActions } from './artifactViews';
+import { searchField } from './searchField';
 
 export interface RichViewActions extends ArtifactActions {
 	copy(text: string): void;
@@ -72,6 +73,7 @@ export function updateRichEntry(element: HTMLElement, entry: Extract<ChatEntry, 
 		const related = relationButton(entry.related, actions); if (related) { buttons.push(related); }
 		if (entry.kind === 'notice') { for (const action of entry.actions ?? []) { buttons.push(actionButton(action, actions)); } }
 		if (entry.kind === 'progress' && entry.cancel && entry.status === 'running') { const id = entry.id; const cancel = button(entry.cancelRequestedAt ? 'Stopping…' : entry.cancel.agentId ? 'Stop agent' : 'Stop current turn', () => actions.cancel(id)); cancel.disabled = !!entry.cancelRequestedAt; buttons.push(cancel); }
+		for (const control of buttons) { control.classList.add('soft-button'); }
 		controls.replaceChildren(...buttons);
 		controls.hidden = !buttons.length;
 	}
@@ -146,7 +148,7 @@ export function updateResultBlocks(container: HTMLElement, blocks: readonly Resu
 				const title = block.type === 'link' ? block.title : block.name;
 				try {
 					const parsed = new URL(url);
-					if (['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password) { section.append(button(title || url, () => actions.openLink?.(parsed.href, false)), node('small', url)); }
+					if (['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password) { const link = button(title || url, () => actions.openLink?.(parsed.href, false)); link.className = 'rich-link'; link.title = url; section.append(link, node('small', url)); }
 					else { section.append(node('pre', url)); }
 				} catch { section.append(node('pre', url)); }
 			} else { section.classList.add('rich-block-attachment'); }
@@ -163,50 +165,107 @@ export function updateResultBlocks(container: HTMLElement, blocks: readonly Resu
 	}
 }
 
+const glyph = (name: string) => { const icon = node('span', undefined, `codicon codicon-${name}`); icon.setAttribute('aria-hidden', 'true'); return icon; };
+
+/** A copy button that answers with a check for a moment; `label` is its tooltip and, unless `iconOnly`, its text. */
+function copyButton(label: string, text: () => string, copy: (text: string) => void, className: string, iconOnly = false): HTMLButtonElement {
+	const control = node('button', undefined, className);
+	control.type = 'button'; control.title = label; control.setAttribute('aria-label', label);
+	const icon = glyph('copy'); control.append(icon);
+	if (!iconOnly) { control.append(node('span', label)); }
+	let reset: ReturnType<typeof setTimeout> | undefined;
+	control.addEventListener('click', event => {
+		event.preventDefault(); event.stopPropagation(); copy(text());
+		icon.className = 'codicon codicon-check'; control.classList.add('copied');
+		clearTimeout(reset); reset = setTimeout(() => { icon.className = 'codicon codicon-copy'; control.classList.remove('copied'); }, 1200);
+	});
+	return control;
+}
+
+type JsonKind = 'string' | 'number' | 'boolean' | 'null' | 'object' | 'array';
+const jsonKind = (item: JsonValue): JsonKind => item === null ? 'null' : Array.isArray(item) ? 'array' : typeof item as 'string' | 'number' | 'boolean' | 'object';
+const jsonPreview = (item: JsonValue) => item === null ? 'null' : Array.isArray(item) ? `Array(${item.length})` : typeof item === 'object' ? `Object(${Object.keys(item).length})` : JSON.stringify(item);
+const identifier = /^[A-Za-z_$][\w$]*$/;
+
+/** Text with every case-insensitive occurrence of `query` wrapped in `<mark>`; never parsed as HTML. */
+function highlighted(text: string, query: string, className: string): HTMLElement {
+	const span = node('span', undefined, className);
+	const lower = text.toLocaleLowerCase();
+	// Lowering can change a string's length (İ), and offsets in it would then point elsewhere in the original.
+	if (!query || lower.length !== text.length) { span.textContent = text; return span; }
+	let at = 0;
+	for (let found = lower.indexOf(query); found >= 0; found = lower.indexOf(query, at)) {
+		span.append(text.slice(at, found), node('mark', text.slice(found, found + query.length)));
+		at = found + query.length;
+	}
+	span.append(text.slice(at));
+	return span;
+}
+
 /** Object children are built only when expanded; search traverses the bounded saved JSON value. */
 export function jsonView(value: JsonValue, copy: (text: string) => void, title = 'JSON'): HTMLElement {
 	const root = node('section', undefined, 'json-view');
-	const head = node('div', undefined, 'rich-header'); head.append(node('strong', title), button('Copy JSON', () => copy(JSON.stringify(value, null, 2))));
-	const search = node('input'); search.type = 'search'; search.placeholder = 'Search keys or values…'; search.setAttribute('aria-label', 'Search JSON');
+	const head = node('div', undefined, 'rich-header json-header');
+	head.append(node('strong', title, 'json-title'), copyButton('Copy JSON', () => JSON.stringify(value, null, 2), copy, 'json-copy-all'));
 	const tree = node('div', undefined, 'json-tree'); const results = node('div', undefined, 'json-search-results'); results.hidden = true;
-	const preview = (item: JsonValue) => item === null ? 'null' : Array.isArray(item) ? `Array(${item.length})` : typeof item === 'object' ? `Object(${Object.keys(item).length})` : JSON.stringify(item);
-	const branch = (key: string, item: JsonValue, depth: number): HTMLElement => {
+	const copyValue = (item: JsonValue) => copyButton('Copy value', () => JSON.stringify(item, null, 2), copy, 'json-copy', true);
+	const keyNode = (key: string, index: boolean) => node('span', key, index ? 'json-key json-index' : 'json-key');
+	const valueNode = (item: JsonValue) => node('span', jsonPreview(item), `json-value json-${jsonKind(item)}`);
+	const branch = (key: string, item: JsonValue, depth: number, index: boolean): HTMLElement => {
 		const row = node('div', undefined, 'json-node');
 		if (item !== null && typeof item === 'object') {
-			const details = node('details'); const summary = node('summary'); summary.append(node('span', `${key}: `, 'json-key'), node('span', preview(item)));
+			const details = node('details'); const summary = node('summary', undefined, 'json-line');
+			summary.append(glyph('chevron-right'), keyNode(key, index), node('span', ':', 'json-colon'), valueNode(item), copyValue(item));
 			const children = node('div', undefined, 'json-children'); let built = false;
 			details.addEventListener('toggle', () => {
 				if (!details.open || built) { return; } built = true;
+				const array = Array.isArray(item);
 				const entries = Object.entries(item); let offset = 0;
-				const more = button('Load more', () => append());
+				const more = button('Load more', () => append()); more.className = 'soft-button json-more';
 				const append = () => {
 					more.remove();
-					for (const [childKey, child] of entries.slice(offset, offset + 100)) { children.append(branch(childKey, child, depth + 1)); }
-					offset += 100; if (offset < entries.length) { children.append(more); }
+					for (const [childKey, child] of entries.slice(offset, offset + 100)) { children.append(branch(childKey, child, depth + 1, array)); }
+					offset += 100; if (offset < entries.length) { more.textContent = `Load more (${entries.length - offset} left)`; children.append(more); }
 				};
-				if (depth >= 50) { children.append(node('span', 'Expand this value with Copy value to inspect deeper nesting.')); } else { append(); }
+				if (depth >= 50) { children.append(node('div', 'Nested too deep to show here — use Copy value to inspect it.', 'json-note')); } else { append(); }
 			});
-			row.append(details, button('Copy value', () => copy(JSON.stringify(item, null, 2)))); details.append(summary, children);
+			details.append(summary, children); row.append(details);
 		} else {
-			row.append(node('span', `${key}: `, 'json-key'), node('code', preview(item)), button('Copy value', () => copy(JSON.stringify(item, null, 2))));
+			const line = node('div', undefined, 'json-line');
+			line.append(node('span', undefined, 'json-twistie'), keyNode(key, index), node('span', ':', 'json-colon'), valueNode(item), copyValue(item));
+			row.append(line);
 		}
 		return row;
 	};
-	tree.append(branch('$', value, 0));
-	search.addEventListener('input', () => {
-		const query = search.value.toLocaleLowerCase(); results.replaceChildren(); results.hidden = !query; tree.hidden = !!query;
+	tree.append(branch('$', value, 0, false));
+	const { field, input: search } = searchField('Search keys or values…', 'Search JSON', () => {
+		const query = search.value.trim().toLocaleLowerCase(); results.replaceChildren(); results.hidden = !query; tree.hidden = !!query;
 		if (!query) { return; }
-		const stack: { key: string; value: JsonValue }[] = [{ key: '$', value }]; let found = 0;
+		// Matched on a value's own key, not its path: every descendant of `nested` would otherwise match "nested".
+		const stack: { path: string; key: string; value: JsonValue }[] = [{ path: '$', key: '$', value }]; let found = 0;
+		const list = node('div', undefined, 'json-search-list');
 		while (stack.length && found < 100) {
 			const current = stack.pop()!;
-			if (current.key.toLocaleLowerCase().includes(query) || (current.value === null || typeof current.value !== 'object') && JSON.stringify(current.value).toLocaleLowerCase().includes(query)) {
-				const item = node('div', undefined, 'json-search-match'); item.append(node('code', `${current.key}: ${preview(current.value)}`), button('Copy value', () => copy(JSON.stringify(current.value, null, 2)))); results.append(item); found++;
+			const leaf = current.value === null || typeof current.value !== 'object';
+			if (current.key.toLocaleLowerCase().includes(query) || leaf && JSON.stringify(current.value).toLocaleLowerCase().includes(query)) {
+				const item = node('div', undefined, 'json-line json-search-match');
+				item.append(highlighted(current.path, query, 'json-key json-path'), node('span', ':', 'json-colon'), leaf ? highlighted(jsonPreview(current.value), query, `json-value json-${jsonKind(current.value)}`) : valueNode(current.value), copyValue(current.value));
+				list.append(item); found++;
 			}
-			if (current.value !== null && typeof current.value === 'object') { for (const [key, value] of Object.entries(current.value).reverse()) { stack.push({ key: `${current.key}[${JSON.stringify(key)}]`, value }); } }
+			if (!leaf) {
+				const array = Array.isArray(current.value);
+				for (const [key, child] of Object.entries(current.value as object).reverse()) {
+					const step = array ? `[${key}]` : identifier.test(key) ? `.${key}` : `[${JSON.stringify(key)}]`;
+					stack.push({ path: current.path + step, key, value: child as JsonValue });
+				}
+			}
 		}
-		results.prepend(node('div', found === 100 ? 'First 100 matches' : `${found} matches`, 'json-search-count'));
+		const count = node('div', found === 100 ? 'Showing the first 100 matches' : found === 1 ? '1 match' : found ? `${found} matches` : 'No matches', 'json-search-count');
+		count.setAttribute('role', 'status');
+		results.append(count, list);
 	});
-	root.append(head, search, tree, results); return root;
+	field.classList.add('json-search');
+	root.append(head, field, tree, results); return root;
 }
 
 export function citationButton(citation: Citation, actions: RichViewActions): HTMLButtonElement {

@@ -17,6 +17,7 @@ import { messageFileDiff, messageFileLabel, messageFiles } from '../src/chat/mes
 import { messageContent, type MessageContent, type MessageContentKind } from '../src/chat/messageContent';
 import { fileGridNeighbor, type FileArrow } from './fileNavigation';
 import { composerLinks, composerListEdit, composerListItem, type ComposerEdit } from './composerFormatting';
+import { codeBlock as mdCodeBlock, link as mdLink, placeholderNames, splitPlaceholders, toggleInline, toggleLines, type TextEdit } from './markdownEdit';
 import { attachmentMarker, readAttachmentMarkers, selectedAttachmentMarkers } from './attachmentMarkers';
 import type { TemporaryStorage } from '../src/core/temporaryFiles';
 import { aiFeatures, defaultFeaturePrompts, featureAgent, featurePromptLimit, readFeatureAiSettings, readTitleRefresh, titleRefreshLimits, type AiFeature, type FeatureAiSettings, type FeatureEffort } from '../src/chat/featureAi';
@@ -3729,6 +3730,21 @@ function selectStripTab(t: StripTab): void {
 	post(t.terminal ? { type: 'selectTerminal', id: t.id } : { type: 'selectTab', id: t.id });
 }
 
+/**
+ * A click on a conversation tab pins it (asked for); the host moves it after the
+ * last pinned tab, once. Where the surface does not pin, nothing is posted — a
+ * refused control would put a line above the thread on every click.
+ */
+function pinOnClick(t: StripTab): void {
+	if (t.terminal || t.pinned || gate('pinTab').s !== 'on') { return; }
+	post({ type: 'pinTab', id: t.id, pinned: true });
+}
+
+/** Closing asks first while the tab works, holds a queue, or is pinned. */
+function asksBeforeClose(t: StripTab): boolean {
+	return !!(t.busy || t.queued || t.skillRuns || (!t.terminal && t.pinned));
+}
+
 /** The dropdown's rows; rebuilt only when what they show changes (#365). */
 /** The row the menu over the dropdown was opened from, for Escape to return to. */
 /** The tab last chosen from the dropdown: it keeps its place in the strip while other shown tabs are selected. */
@@ -3772,7 +3788,8 @@ function fillOverflowPanel(): void {
 		const t = node.tab;
 		const marks: (HTMLElement | undefined)[] = t.terminal
 			? [icon('terminal', 'menu-icon'), t.terminal.status === 'exited' ? el('span', { class: 'tab-mark exited', title: 'The process ended' }) : undefined]
-			: [icon('comment', 'menu-icon'), tabMark(t.status)];
+			// The strip's own bubble, its colour and pulse carrying the status — no spinner in the list (asked for).
+			: [tabKindMark(t.status)];
 		const name = t.terminal ? t.terminal.name : t.title;
 		const agents = t.terminal ? 0 : agentsOf(t);
 		const row = button([
@@ -3945,6 +3962,8 @@ document.addEventListener('mousedown', event => {
 window.addEventListener('resize', () => placeTabConfirm());
 /** The first click of a possible double-click, by tab; see the label's click handler. */
 let firstClick: { readonly id: string; readonly at: number } | undefined;
+/** A pin waiting out a possible double-click on the tab in front (`pinOnClick`). */
+let pinTimer: ReturnType<typeof setTimeout> | undefined;
 const doubleClickMs = 600;
 tabConfirm.hidden = true;
 let confirmShown = '';
@@ -4280,7 +4299,7 @@ function renderTabs(s: ChatViewState): void {
 	// The conversations, then the terminals; only the editor's state has terminals.
 	const strip = stripOf(s);
 	const frontId = frontStripId(s);
-	if (closingTab && !strip.some(t => t.id === closingTab && (t.busy || t.queued || t.skillRuns))) {
+	if (closingTab && !strip.some(t => t.id === closingTab && asksBeforeClose(t))) {
 		closingTab = undefined;
 	}
 	if (editingTab && !strip.some(t => t.id === editingTab)) {
@@ -4334,6 +4353,7 @@ function renderTabs(s: ChatViewState): void {
 		}
 		node.root.classList.toggle('active', t.id === frontId);
 		node.root.classList.toggle('chrome-mirrored', t.chrome === true);
+		node.root.classList.toggle('pinned', !t.terminal && t.pinned === true);
 		node.label.setAttribute('aria-current', t.id === frontId ? 'page' : 'false');
 		node.root.classList.toggle('running', t.running);
 		node.root.classList.toggle('project-hidden', narrowFilter !== undefined && !t.terminal && projectOf(t) !== narrowFilter);
@@ -4502,7 +4522,7 @@ function animateTabSwitch(before: Map<string, number>, ids: string[]): void {
 }
 
 function tabShown(t: StripTab, agent: string | undefined): string {
-	return t.terminal ? terminalTabShown(t.terminal) : JSON.stringify([t.title, t.mark, t.status, t.agents, t.skillRuns, t.busy, agent, t.model, t.chrome, conversationShown(t)]);
+	return t.terminal ? terminalTabShown(t.terminal) : JSON.stringify([t.title, t.mark, t.status, t.agents, t.skillRuns, t.busy, agent, t.model, t.chrome, t.pinned, conversationShown(t)]);
 }
 
 /**
@@ -4584,6 +4604,10 @@ function tabNode(t: StripTab): TabNode {
 			{ icon: 'close', label: 'Remove label', command: 'setTabMark', run: () => post({ type: 'setTabMark', id: node.tab.id }) },
 		] : [{ icon: 'smiley', label: 'Add label…', command: 'setTabMark', run: () => openMarkPicker(anchor, node.tab.id) }]) as MenuItem[]);
 		if (items.length > (node.tab.mark ? 2 : 1)) { items[node.tab.mark ? 2 : 1] = { ...items[node.tab.mark ? 2 : 1], separator: true }; }
+		if (items.length) { items[0] = { ...items[0], separator: true }; }
+		items.unshift(node.tab.pinned
+			? { icon: 'pinned', label: 'Unpin tab', description: 'Closing it no longer asks first', command: 'pinTab', run: () => post({ type: 'pinTab', id: node.tab.id, pinned: false }) }
+			: { icon: 'pin', label: 'Pin tab', description: 'Moves it after the pinned tabs; closing it asks first', command: 'pinTab', run: () => post({ type: 'pinTab', id: node.tab.id, pinned: true }) });
 		if (overflowed) {
 			items.unshift({ icon: 'edit', label: 'Rename', command: 'renameTab', run: () => renameFromMenu(node) });
 		}
@@ -4602,8 +4626,20 @@ function tabNode(t: StripTab): TabNode {
 			return;
 		}
 		firstClick = { id: node.tab.id, at: now };
+		// Only a click on the tab already in front pins it: a click that selects
+		// another tab is a selection and nothing more. It waits out a double-click,
+		// which renames rather than pins. "In front" is the strip's front, not
+		// `activeTab`: with a terminal in front, `activeTab` still names the
+		// conversation behind it, and a click to go back to it is a selection.
+		const inFront = !node.tab.terminal && !!state && frontStripId(state) === node.tab.id;
 		if (!node.tab.terminal && state && state.activeTab !== node.tab.id) { markTabLoading(node.tab.id); }
 		post(node.tab.terminal ? { type: 'selectTerminal', id: node.tab.id } : { type: 'selectTab', id: node.tab.id });
+		if (pinTimer) { clearTimeout(pinTimer); pinTimer = undefined; }
+		if (inFront && event.detail <= 1) {
+			const tab = node.tab;
+			// As long as the strip's own double-click window, so a slow double-click renames without pinning first.
+			pinTimer = setTimeout(() => { pinTimer = undefined; pinOnClick(tab); }, doubleClickMs);
+		}
 		// A terminal already in front takes the keyboard back: nothing changes in the state to do it.
 		if (node.tab.terminal && state && frontStripId(state) === node.tab.id) { terminalView?.focusFront(); }
 	});
@@ -4611,6 +4647,7 @@ function tabNode(t: StripTab): TabNode {
 		if (gate(node.tab.terminal ? 'renameTerminal' : 'renameTab').s !== 'on') { return; }
 		const first = firstClick && performance.now() - firstClick.at < doubleClickMs ? tabNodes.get(firstClick.id) : undefined;
 		firstClick = undefined;
+		if (pinTimer) { clearTimeout(pinTimer); pinTimer = undefined; }
 		startRename(first ?? node);
 	});
 	label.addEventListener('keydown', event => {
@@ -4620,7 +4657,7 @@ function tabNode(t: StripTab): TabNode {
 		}
 	});
 	close.addEventListener('click', () => {
-		if (node.tab.busy || node.tab.queued || node.tab.skillRuns) {
+		if (asksBeforeClose(node.tab)) {
 			closingTab = node.tab.id;
 			if (state) {
 				renderTabs(state);
@@ -4694,7 +4731,7 @@ function fillTab(node: TabNode, agent: string | undefined): void {
 		terminalBadge,
 	];
 	node.label.replaceChildren(...parts.filter((p): p is HTMLElement => !!p));
-	const description = `${agent ? `${t.title} — ${agent}${t.model ? ` · ${t.model}` : ''}` : t.title}\n${t.status ? tabMarks[t.status] : 'New chat'}${agentsOf(t) ? ` · ${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} running` : ''}${t.chrome ? ' · open in Google Chrome' : ''}${badge ? ` · ${badge.title}` : ''}`;
+	const description = `${agent ? `${t.title} — ${agent}${t.model ? ` · ${t.model}` : ''}` : t.title}\n${t.status ? tabMarks[t.status] : 'New chat'}${agentsOf(t) ? ` · ${agentsOf(t)} agent${agentsOf(t) === 1 ? '' : 's'} running` : ''}${t.chrome ? ' · open in Google Chrome' : ''}${t.pinned ? ' · pinned' : ''}${badge ? ` · ${badge.title}` : ''}`;
 	node.label.setAttribute('aria-label', description);
 	node.label.title = `${description}\nDouble-click to rename. Drag to reorder. Right-click for chat actions.`;
 	node.close.title = `${t.busy ? 'Close (stops what it is doing)' : 'Close'} (${isMacView ? '⌥W' : 'Alt+W'})`;
@@ -4818,7 +4855,7 @@ function renderTabConfirm(s: ChatViewState): void {
 	if (closing && wideChat.matches && chatDrawerCollapsed) {
 		chatDrawerCollapsed = false; updateChatDrawer(); saveDraft();
 	}
-	const shown = closing ? JSON.stringify([closing.id, closing.title, closing.agents, closing.skillRuns, closing.busy, closing.queued, closing.terminal?.status]) : '';
+	const shown = closing ? JSON.stringify([closing.id, closing.title, closing.agents, closing.skillRuns, closing.busy, closing.queued, closing.pinned, closing.terminal?.status]) : '';
 	if (shown === confirmShown) {
 		return;
 	}
@@ -4828,7 +4865,8 @@ function renderTabConfirm(s: ChatViewState): void {
 		tabConfirm.replaceChildren();
 		return;
 	}
-	const yes = button([el('span', { text: 'Stop and close' })], { class: 'confirm-danger' });
+	const stops = !!(closing.busy || closing.queued || closing.skillRuns);
+	const yes = button([el('span', { text: stops || closing.terminal ? 'Stop and close' : 'Close' })], { class: 'confirm-danger' });
 	yes.addEventListener('click', () => {
 		closingTab = undefined;
 		post({ type: closing.terminal ? 'closeTerminal' : 'closeTab', id: closing.id });
@@ -4845,9 +4883,10 @@ function renderTabConfirm(s: ChatViewState): void {
 	}
 	const parts = stoppedParts(closing);
 	const queued = closing.queued ? `${closing.queued} queued message${closing.queued === 1 ? '' : 's'} will not be sent.` : '';
+	const pinnedNote = closing.pinned ? `"${closing.title}" is pinned. Are you sure you want to close it?` : '';
 	const text = parts.length
-		? `"${closing.title}" is still working. Closing it stops ${parts.join(' and ')}.${queued ? ` ${queued}` : ''}`
-		: `"${closing.title}": ${queued}`;
+		? `"${closing.title}" is ${closing.pinned ? 'pinned and ' : ''}still working. Closing it stops ${parts.join(' and ')}.${queued ? ` ${queued}` : ''}`
+		: queued ? `${pinnedNote || `"${closing.title}":`} ${queued}` : pinnedNote;
 	tabConfirm.replaceChildren(el('span', { text }), yes, no);
 	placeTabConfirm();
 }
@@ -11393,7 +11432,7 @@ const skillColorNames = ['red', 'orange', 'yellow', 'green', 'blue', 'purple'] a
  * marked afterwards: rebuilding would take the colour input out of the page,
  * which closes its picker in the middle of a drag.
  */
-function colorChoice(initial: string | undefined): { node: HTMLElement; value(): string | undefined } {
+function colorChoice(initial: string | undefined, onChange?: () => void): { node: HTMLElement; value(): string | undefined } {
 	let chosen = initial;
 	const custom = el('input', { class: 'color-custom' });
 	custom.type = 'color';
@@ -11405,7 +11444,7 @@ function colorChoice(initial: string | undefined): { node: HTMLElement; value():
 		if (c) {
 			b.style.setProperty('--swatch', `var(--vscode-charts-${c})`);
 		}
-		b.addEventListener('click', () => { chosen = c; mark(); });
+		b.addEventListener('click', () => { chosen = c; mark(); onChange?.(); });
 		return { c, b };
 	});
 	const mark = () => {
@@ -11423,7 +11462,7 @@ function colorChoice(initial: string | undefined): { node: HTMLElement; value():
 			customWrap.style.removeProperty('--swatch');
 		}
 	};
-	custom.addEventListener('input', () => { chosen = custom.value.toLowerCase(); mark(); });
+	custom.addEventListener('input', () => { chosen = custom.value.toLowerCase(); mark(); onChange?.(); });
 	mark();
 	return { node: el('div', { class: 'color-choices' }, ...swatches.map(x => x.b), customWrap), value: () => chosen };
 }
@@ -11657,6 +11696,237 @@ function selectField<T extends string>(options: readonly (readonly [T, string])[
 	return select;
 }
 
+/** The editor's scroll area while it is open: every prompt field may grow to fill it. */
+let skillFormArea: HTMLElement | undefined;
+const skillFormResize = new ResizeObserver(() => fitEditorFields());
+
+function fitEditorFields(): void {
+	skillFormArea?.querySelectorAll<HTMLTextAreaElement>('textarea[data-grow]').forEach(field => fitField(field));
+}
+
+/**
+ * A field of the editor as tall as what it holds, up to the visible height of
+ * the editor (`full`) or a third of it (`third`); past that it scrolls inside
+ * itself. Expanded (`.md-expanded` around it), it takes the whole height
+ * whatever it holds. The form's scroll is kept, since `height: auto` for the
+ * measurement shortens it for a moment.
+ */
+function fitField(field: HTMLTextAreaElement, follow = false): void {
+	const area = field.closest<HTMLElement>('.skill-form');
+	if (!area || !field.offsetParent) {
+		return;
+	}
+	const block = field.closest<HTMLElement>('.md-editor') ?? field;
+	const chrome = block.offsetHeight - field.offsetHeight;
+	const room = area.clientHeight - 28 - chrome;
+	const cap = Math.max(96, field.dataset.grow === 'full' ? room : Math.floor(room / 3));
+	const keep = area.scrollTop;
+	field.style.height = 'auto';
+	const wanted = field.scrollHeight + field.offsetHeight - field.clientHeight;
+	const height = field.closest('.md-expanded') ? cap : Math.min(cap, wanted);
+	field.style.height = `${height}px`;
+	field.style.overflowY = wanted > height ? 'auto' : 'hidden';
+	area.scrollTop = keep;
+	// Typing on the last lines of a field that grows keeps them on screen.
+	if (follow && document.activeElement === field && !field.value.slice(field.selectionEnd).includes('\n')) {
+		const a = area.getBoundingClientRect();
+		const f = field.getBoundingClientRect();
+		if (f.bottom > a.bottom - 12) {
+			area.scrollTop += f.bottom - a.bottom + 12;
+		}
+	}
+}
+
+/** One edit to a field, through the editing commands so ⌘Z takes it back. */
+function applyFieldEdit(field: HTMLTextAreaElement, edit: TextEdit): void {
+	// A hidden field (its editor showing the preview) cannot take the focus.
+	fieldEditors.get(field)?.write();
+	field.focus();
+	field.setSelectionRange(edit.start, edit.end);
+	// The editing commands act on whatever has the focus: a field that did not
+	// take it is written directly, or the text would land in another input.
+	const focused = document.activeElement === field;
+	const done = focused && (edit.text ? document.execCommand('insertText', false, edit.text) : document.execCommand('delete'));
+	if (!done || field.value.slice(edit.start, edit.start + edit.text.length) !== edit.text) {
+		field.setRangeText(edit.text, edit.start, edit.end, 'end');
+		field.dispatchEvent(new Event('input', { bubbles: true }));
+	}
+	field.setSelectionRange(edit.selectionStart, edit.selectionEnd);
+}
+
+/** `{{name}}` in a rendered preview drawn as a token; one naming no parameter in the warning colour. */
+function markPlaceholders(root: Node, known: (name: string) => boolean): void {
+	const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+	const texts: Text[] = [];
+	for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+		if ((n as Text).data.includes('{{')) {
+			texts.push(n as Text);
+		}
+	}
+	for (const text of texts) {
+		const parts = splitPlaceholders(text.data);
+		if (parts.some(p => 'param' in p)) {
+			text.replaceWith(...parts.map(p => 'param' in p
+				? el('span', { class: `param-token${known(p.param) ? '' : ' unknown'}`, text: p.raw, title: known(p.param) ? `Parameter ${p.param}` : `No parameter named ${p.param}` })
+				: p.text));
+		}
+	}
+}
+
+interface MarkdownEditor {
+	readonly node: HTMLElement;
+	/** Back to writing, for a field the form is about to focus. */
+	write(): void;
+}
+
+/** Each prompt field's editor, so an edit made from outside it can bring it back to writing first. */
+const fieldEditors = new WeakMap<HTMLTextAreaElement, MarkdownEditor>();
+
+/**
+ * A prompt field with Markdown around it: a toolbar of formats (with their
+ * keys), Write and Preview, and a button that gives the field the editor's
+ * whole height. Lists go on with Enter and indent with Tab, as in the message
+ * box. The prompt reaches the agent as written — Markdown is how it reads.
+ */
+function markdownEditor(field: HTMLTextAreaElement, opts: { grow: 'full' | 'third'; known: (name: string) => boolean; insertParam: (anchor: HTMLElement) => void }): MarkdownEditor {
+	field.dataset.grow = opts.grow;
+	field.classList.add('md-field');
+	const preview = el('div', { class: 'md-preview markdown' });
+	preview.hidden = true;
+	const wrap = el('div', { class: 'md-editor' });
+	const mod = isMacView ? '⌘' : 'Ctrl+';
+	const tool = (name: string, title: string, run: (v: string, s: number, e: number) => TextEdit, key?: string) => {
+		const b = button([icon(name)], { class: 'ghost md-tool', title: key ? `${title} (${mod}${key})` : title });
+		// The field keeps the focus and its selection while a format is pressed.
+		b.addEventListener('mousedown', event => event.preventDefault());
+		b.addEventListener('click', () => {
+			showWrite();
+			applyFieldEdit(field, run(field.value, field.selectionStart, field.selectionEnd));
+		});
+		return b;
+	};
+	const bold = (v: string, s: number, e: number) => toggleInline(v, s, e, '**', 'bold text');
+	const italic = (v: string, s: number, e: number) => toggleInline(v, s, e, '_', 'italic text');
+	const code = (v: string, s: number, e: number) => toggleInline(v, s, e, '`', 'code');
+	const param = button([icon('symbol-parameter')], { class: 'ghost md-tool', title: 'Insert a parameter — {{name}}' });
+	param.addEventListener('mousedown', event => event.preventDefault());
+	param.addEventListener('click', () => { showWrite(); opts.insertParam(param); });
+	const tools = el('div', { class: 'md-tools' },
+		tool('bold', 'Bold', bold, 'B'),
+		tool('italic', 'Italic', italic, 'I'),
+		tool('code', 'Inline code', code, 'E'),
+		tool('link', 'Link', mdLink, 'K'),
+		el('span', { class: 'md-sep' }),
+		tool('text-size', 'Heading', (v, s, e) => toggleLines(v, s, e, 'heading')),
+		tool('list-unordered', 'Bulleted list', (v, s, e) => toggleLines(v, s, e, 'bullet')),
+		tool('list-ordered', 'Numbered list', (v, s, e) => toggleLines(v, s, e, 'number')),
+		tool('checklist', 'Task list', (v, s, e) => toggleLines(v, s, e, 'task')),
+		tool('quote', 'Quote', (v, s, e) => toggleLines(v, s, e, 'quote')),
+		tool('file-code', 'Code block', mdCodeBlock),
+		el('span', { class: 'md-sep' }),
+		param);
+	const writeTab = button([el('span', { text: 'Write' })], { class: 'md-tab', title: 'Edit the Markdown' });
+	const previewTab = button([el('span', { text: 'Preview' })], { class: 'md-tab', title: 'See it rendered' });
+	const expand = button([icon('screen-full')], { class: 'ghost md-tool', title: 'Use the whole height' });
+	const tabs = el('div', { class: 'md-tabs' }, writeTab, previewTab);
+	tabs.setAttribute('role', 'tablist');
+	writeTab.setAttribute('role', 'tab');
+	previewTab.setAttribute('role', 'tab');
+	const bar = el('div', { class: 'md-bar' }, tools, el('div', { class: 'md-bar-end' }, tabs, expand));
+	const mark = (writing: boolean) => {
+		writeTab.setAttribute('aria-selected', String(writing));
+		previewTab.setAttribute('aria-selected', String(!writing));
+		wrap.classList.toggle('previewing', !writing);
+	};
+	const showWrite = () => {
+		if (!field.hidden) {
+			return;
+		}
+		preview.hidden = true;
+		field.hidden = false;
+		mark(true);
+		fitField(field);
+	};
+	const showPreview = () => {
+		const height = field.offsetHeight;
+		preview.replaceChildren();
+		if (field.value.trim()) {
+			preview.append(renderMarkdown(field.value));
+			markPlaceholders(preview, opts.known);
+		} else {
+			preview.append(el('p', { class: 'md-empty', text: 'Nothing to preview yet.' }));
+		}
+		preview.style.minHeight = `${height}px`;
+		preview.style.maxHeight = wrap.classList.contains('md-expanded') ? `${height}px` : '';
+		field.hidden = true;
+		preview.hidden = false;
+		mark(false);
+	};
+	writeTab.addEventListener('click', () => { showWrite(); field.focus(); });
+	previewTab.addEventListener('click', showPreview);
+	expand.addEventListener('click', () => {
+		const on = wrap.classList.toggle('md-expanded');
+		expand.replaceChildren(icon(on ? 'screen-normal' : 'screen-full'));
+		expand.title = on ? 'Back to its own height' : 'Use the whole height';
+		expand.setAttribute('aria-label', expand.title);
+		showWrite();
+		fitField(field);
+		wrap.scrollIntoView({ block: 'start', behavior: 'smooth' });
+		field.focus();
+	});
+	mark(true);
+
+	field.addEventListener('input', () => fitField(field, true));
+	field.addEventListener('keydown', event => {
+		// The inline palette answers its own keys first (`promptField`).
+		if (event.defaultPrevented || event.isComposing) {
+			return;
+		}
+		const primary = isMacView ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+		if (primary && !event.altKey && !event.shiftKey) {
+			const run = ({ b: bold, i: italic, e: code, k: mdLink } as Record<string, typeof bold | undefined>)[event.key.toLowerCase()];
+			if (run) {
+				// Stopped as well: the webview hands every key it sees on to the workbench,
+				// where ⌘B toggles the side bar and ⌘K starts a chord.
+				event.preventDefault();
+				event.stopPropagation();
+				applyFieldEdit(field, run(field.value, field.selectionStart, field.selectionEnd));
+			}
+			return;
+		}
+		if (!event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'Enter' || event.key === 'Tab')) {
+			const edit = composerListEdit(field.value, field.selectionStart, field.selectionEnd, event.key, event.shiftKey);
+			if (edit) {
+				event.preventDefault();
+				applyFieldEdit(field, edit);
+			}
+		}
+	});
+	wrap.append(bar, field, preview);
+	const editor = { node: wrap, write: showWrite };
+	fieldEditors.set(field, editor);
+	return editor;
+}
+
+/** A small text field of the editor that grows with what it holds, up to a third of the editor. */
+function growField(value: string, placeholder: string): HTMLTextAreaElement {
+	const field = el('textarea', { class: 'form-input form-check' });
+	field.value = value;
+	field.rows = 1;
+	field.placeholder = placeholder;
+	field.dataset.grow = 'third';
+	field.addEventListener('input', () => fitField(field, true));
+	return field;
+}
+
+/** A titled part of the editor. */
+function skillSection(iconName: string, title: string, hint: string | undefined, ...body: Child[]): HTMLElement {
+	return el('section', { class: 'skill-section' },
+		el('div', { class: 'skill-section-head' }, icon(iconName), el('span', { class: 'skill-section-title', text: title })),
+		hint ? el('p', { class: 'skill-section-hint', text: hint }) : '',
+		...body);
+}
+
 /**
  * The editor, over the chat. Built once per opening and never on a state post,
  * so what is typed in it is never rebuilt away. The host checks the skill
@@ -11668,11 +11938,20 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 	editorAgents = skill?.agents ?? 'all';
 	let chosenIcon = skill?.icon ?? 'sparkle';
 
+	// Parameters first: the prompt's placeholders are checked against them.
+	const drafts: DraftParam[] = (skill?.params ?? []).map(p => ({
+		name: p.name, type: p.type, maxLength: p.maxLength ? String(p.maxLength) : '', preset: p.preset ?? '', options: (p.options ?? []).join(', '),
+	}));
+	const known = (n: string) => drafts.some(d => d.name.trim() === n);
+
 	const name = textField(skill?.name ?? '', 'pr-review');
 	// Lower case only, as the CLIs' own skills are: typed capitals become small
 	// ones where they are typed, the caret kept where it was.
 	name.autocapitalize = 'off';
 	name.spellcheck = false;
+	const sigil = el('span', { class: 'name-sigil' });
+	const paintSigil = () => { sigil.textContent = editorAgents === 'codex' ? '$' : '/'; };
+	paintSigil();
 	name.addEventListener('input', () => {
 		const lower = name.value.toLowerCase();
 		if (lower !== name.value) {
@@ -11680,8 +11959,68 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 			name.value = lower;
 			name.setSelectionRange(at, at);
 		}
+		paintPreview();
 	});
-	const prompt = promptField(skill?.prompt ?? '', 'Review PR {{pr}} with /one-more-review…', 6);
+	const nameField = el('div', { class: 'name-field' }, sigil, name);
+
+	const agents = selectField<ToolbarSkill['agents']>([['all', 'All agents'], ['claude', 'Claude Code only'], ['codex', 'Codex only'], ['gemini', 'Gemini CLI only'], ['opencode', 'OpenCode only'], ['pi', 'Pi only'], ['openrouter', 'OpenRouter only']], editorAgents);
+	agents.addEventListener('change', () => {
+		editorAgents = agents.value as ToolbarSkill['agents'];
+		paintSigil();
+		paintPreview();
+	});
+
+	// Inserting `{{name}}` at the caret of the prompt last written in.
+	let lastPrompt: HTMLTextAreaElement | undefined;
+	const insertPlaceholder = (field: HTMLTextAreaElement, n: string) => {
+		const start = field.selectionStart;
+		const text = `{{${n}}}`;
+		applyFieldEdit(field, { start, end: field.selectionEnd, text, selectionStart: start + text.length, selectionEnd: start + text.length });
+	};
+	const insertParam = (field: HTMLTextAreaElement) => (anchor: HTMLElement) => {
+		const named = drafts.map(d => d.name.trim()).filter(Boolean);
+		if (!named.length) {
+			const start = field.selectionStart;
+			applyFieldEdit(field, { start, end: field.selectionEnd, text: '{{name}}', selectionStart: start + 2, selectionEnd: start + 6 });
+			return;
+		}
+		openMenu(anchor, [
+			...named.map(n => ({ icon: 'symbol-parameter', label: `{{${n}}}`, run: () => insertPlaceholder(field, n) })),
+			{ icon: 'add', label: 'A new parameter…', description: 'Type its name, then add it below', run: () => {
+				const start = field.selectionStart;
+				applyFieldEdit(field, { start, end: field.selectionEnd, text: '{{name}}', selectionStart: start + 2, selectionEnd: start + 6 });
+			} },
+		], 'Insert parameter', undefined, skillEditor);
+	};
+
+	const prompt = promptField(skill?.prompt ?? '', 'Review PR {{pr}} with /one-more-review…\n\nMarkdown works here: **bold**, lists, `code`, headings.', 8);
+	prompt.addEventListener('focus', () => { lastPrompt = prompt; });
+	prompt.addEventListener('input', () => paintMissing());
+	const promptEditor = markdownEditor(prompt, { grow: 'full', known, insertParam: insertParam(prompt) });
+
+	// Placeholders the prompts use that name no parameter yet — one click adds it.
+	const missing = el('div', { class: 'param-missing' });
+	const paintMissing = () => {
+		const used = placeholderNames(prompt.value, ...steps.flatMap(step => [step.prompt, step.check]));
+		const absent = used.filter(n => !known(n));
+		missing.replaceChildren(...absent.length ? [
+			icon('warning'), el('span', { text: absent.length === 1 ? 'Not a parameter yet:' : 'Not parameters yet:' }),
+			...absent.map(n => {
+				const b = button([icon('add'), el('span', { text: n })], { class: 'param-chip', title: `Add a parameter named ${n}` });
+				b.addEventListener('click', () => {
+					drafts.push({ name: n, type: 'text', maxLength: '', preset: '', options: '' });
+					paintParams();
+					paintMissing();
+				});
+				return b;
+			}),
+		] : []);
+		missing.hidden = !absent.length;
+		for (const row of paramList.children) {
+			const n = (row as HTMLElement).dataset.param ?? '';
+			(row as HTMLElement).classList.toggle('unused', !!n && !used.includes(n));
+		}
+	};
 
 	// The prompts after the first, each sent once the one before it is over —
 	// and, where it has a check, only if the agent found the check true.
@@ -11689,24 +12028,24 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 	const stepList = el('div', { class: 'step-list' });
 	const paintSteps = () => {
 		stepList.replaceChildren(...steps.map((step, i) => {
-			const check = el('textarea', { class: 'form-input form-check' });
-			check.value = step.check;
-			check.rows = 2;
-			check.placeholder = 'Optional. E.g. "the tests pass" — empty: always go on';
-			check.addEventListener('input', () => { step.check = check.value; });
-			const text = promptField(step.prompt, 'The next prompt…', 4);
-			text.addEventListener('input', () => { step.prompt = text.value; });
+			const check = growField(step.check, 'Optional — e.g. "the tests pass". Empty: always go on.');
+			check.addEventListener('input', () => { step.check = check.value; paintMissing(); });
+			const text = promptField(step.prompt, 'The next prompt…', 3);
+			text.addEventListener('focus', () => { lastPrompt = text; });
+			text.addEventListener('input', () => { step.prompt = text.value; paintMissing(); });
 			text.addEventListener('change', () => { step.prompt = text.value; });
-			const remove = button([icon('close')], { class: 'ghost round', title: 'Remove this prompt' });
-			remove.addEventListener('click', () => { steps.splice(i, 1); paintSteps(); });
+			const remove = button([icon('trash')], { class: 'ghost round', title: `Remove prompt ${i + 2}` });
+			remove.addEventListener('click', () => { steps.splice(i, 1); paintSteps(); paintMissing(); });
 			return el('div', { class: 'step-row' },
-				el('div', { class: 'step-head' }, el('span', { class: 'form-label', text: `Prompt ${i + 2}` }), remove),
-				el('span', { class: 'form-hint', text: `Check after prompt ${i + 1} — the agent judges it, and prompt ${i + 2} runs only if it holds` }),
+				el('div', { class: 'step-gate' }, icon('arrow-down'),
+					el('span', { class: 'form-hint', text: `Only if, after prompt ${i + 1}…` })),
 				check,
-				text);
+				el('div', { class: 'step-head' }, el('span', { class: 'step-badge', text: String(i + 2) }), el('span', { class: 'form-label', text: `Prompt ${i + 2}` }), remove),
+				markdownEditor(text, { grow: 'third', known, insertParam: insertParam(text) }).node);
 		}));
+		addStep.disabled = steps.length >= 9;
+		requestAnimationFrame(fitEditorFields);
 	};
-	paintSteps();
 	const addStep = button([icon('add'), el('span', { text: 'Add next prompt' })], { class: 'ghost' });
 	addStep.addEventListener('click', () => {
 		if (steps.length >= 9) {
@@ -11717,24 +12056,22 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 		(stepList.lastElementChild?.querySelector('.form-prompt') as HTMLTextAreaElement | null)?.focus();
 	});
 
-	const agents = selectField<ToolbarSkill['agents']>([['all', 'All agents'], ['claude', 'Claude Code only'], ['codex', 'Codex only'], ['gemini', 'Gemini CLI only'], ['opencode', 'OpenCode only'], ['pi', 'Pi only'], ['openrouter', 'OpenRouter only']], editorAgents);
-	agents.addEventListener('change', () => { editorAgents = agents.value as ToolbarSkill['agents']; });
-
-	const results: readonly (readonly [ToolbarResult, string, string])[] = [
-		['chat', 'In the chat', 'Sent as a message of the tab it is pressed in'],
-		['clipboard', 'To the clipboard', 'Runs in the background; only the marked result is copied'],
-		['silent', 'Silently', 'Runs in the background; the button says when it is done'],
-		['toast', 'In a notification', 'Runs in the background; the marked result is shown in a VS Code notification, with Copy and Open — which pauses a browser tab on screen until it is dismissed'],
+	// Where the result goes: four cards, one chosen.
+	const results: readonly (readonly [ToolbarResult, string, string, string])[] = [
+		['chat', 'comment-discussion', 'In the chat', 'Sent as a message of the tab it is pressed in'],
+		['clipboard', 'clippy', 'To the clipboard', 'Runs in the background; only the marked result is copied'],
+		['silent', 'eye-closed', 'Silently', 'Runs in the background; the button says when it is done'],
+		['toast', 'bell', 'In a notification', 'Runs in the background; shown with Copy and Open. A notification pauses a browser tab on screen until it is dismissed'],
 	];
 	let chosenResult: ToolbarResult = skill?.result ?? 'chat';
-	const resultGroup = el('div', { class: 'form-choices' }, ...results.map(([value, label, hint]) => {
+	const resultGroup = el('div', { class: 'result-cards' }, ...results.map(([value, iconName, text, hint]) => {
 		const radio = el('input');
 		radio.type = 'radio';
 		radio.name = `result-${id}`;
 		radio.checked = value === chosenResult;
 		radio.addEventListener('change', () => { chosenResult = value; });
-		return el('label', { class: 'form-choice' }, radio, el('span', { class: 'form-choice-text' },
-			el('span', { text: label }), el('span', { class: 'form-hint', text: hint })));
+		return el('label', { class: 'result-card' }, radio, icon(iconName, 'result-icon'),
+			el('span', { class: 'result-text' }, el('span', { class: 'result-title', text }), el('span', { class: 'form-hint', text: hint })));
 	}));
 
 	// How its end is told: not at all, in a sentence of ours, or in the user's own words.
@@ -11754,6 +12091,27 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 		}
 	});
 
+	// The button as it will stand in the toolbar, drawn again on every change.
+	const previewButton = el('span', { class: 'skill-button skill-preview-button' });
+	const previewMeta = el('span', { class: 'skill-preview-meta' });
+	const paintPreview = () => {
+		const text = label.value.trim();
+		previewButton.replaceChildren(icon(chosenIcon), text ? el('span', { class: 'skill-label', text }) : '');
+		for (const part of ['text', 'border', 'icon'] as const) {
+			const tint = skillColor(colors[part].value());
+			previewButton.classList.toggle(`tint-${part}`, !!tint);
+			if (tint) {
+				previewButton.style.setProperty(`--skill-${part}`, tint);
+			} else {
+				previewButton.style.removeProperty(`--skill-${part}`);
+			}
+		}
+		const n = name.value.trim() || 'name';
+		const where = agents.selectedOptions[0]?.textContent ?? '';
+		previewMeta.replaceChildren(el('span', { class: 'skill-preview-name', text: `${sigil.textContent}${n}` }), el('span', { text: ` · ${where}` }),
+			tooltip.value.trim() ? el('span', { class: 'skill-preview-tip', text: `“${tooltip.value.trim()}”` }) : '');
+	};
+
 	// The icon: a button showing it, opening a searchable grid of every codicon.
 	const iconPreview = el('span', { class: 'icon-preview' });
 	const paintIcon = () => iconPreview.replaceChildren(icon(chosenIcon), el('span', { text: chosenIcon }));
@@ -11772,14 +12130,18 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 			b.addEventListener('click', () => {
 				chosenIcon = n;
 				paintIcon();
+				paintPreview();
 				iconPanel.hidden = true;
+				iconButton.setAttribute('aria-expanded', 'false');
 			});
 			return b;
 		}), names.length ? '' : el('div', { class: 'form-hint', text: 'No icon by that name.' }));
 	};
 	iconSearch.addEventListener('input', paintGrid);
+	iconButton.setAttribute('aria-expanded', 'false');
 	iconButton.addEventListener('click', () => {
 		iconPanel.hidden = !iconPanel.hidden;
+		iconButton.setAttribute('aria-expanded', String(!iconPanel.hidden));
 		if (!iconPanel.hidden) {
 			paintGrid();
 			iconSearch.focus();
@@ -11787,24 +12149,23 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 	});
 	// Three colours, for the label, the border and the icon (asked for).
 	const colors = {
-		text: colorChoice(skill?.colors?.text),
-		border: colorChoice(skill?.colors?.border),
-		icon: colorChoice(skill?.colors?.icon),
+		text: colorChoice(skill?.colors?.text, () => paintPreview()),
+		border: colorChoice(skill?.colors?.border, () => paintPreview()),
+		icon: colorChoice(skill?.colors?.icon, () => paintPreview()),
 	};
-	const label = textField(skill?.label ?? '', 'Optional');
+	const label = textField(skill?.label ?? '', 'Optional — shown beside the icon');
+	label.addEventListener('input', () => paintPreview());
 	const tooltip = textField(skill?.tooltip ?? '', 'Shown on hover; the name when empty');
+	tooltip.addEventListener('input', () => paintPreview());
 
 	// Parameters.
-	const drafts: DraftParam[] = (skill?.params ?? []).map(p => ({
-		name: p.name, type: p.type, maxLength: p.maxLength ? String(p.maxLength) : '', preset: p.preset ?? '', options: (p.options ?? []).join(', '),
-	}));
 	const paramList = el('div', { class: 'param-list' });
 	const paintParams = () => {
 		paramList.replaceChildren(...drafts.map((d, i) => {
 			const pName = textField(d.name, 'name');
-			pName.addEventListener('input', () => { d.name = pName.value; });
+			pName.addEventListener('input', () => { d.name = pName.value; row.dataset.param = d.name.trim(); paintMissing(); });
 			const pType = selectField<ToolbarParam['type']>([['text', 'Text'], ['number', 'Number'], ['choice', 'Choice']], d.type);
-			pType.addEventListener('change', () => { d.type = pType.value as ToolbarParam['type']; paintParams(); });
+			pType.addEventListener('change', () => { d.type = pType.value as ToolbarParam['type']; paintParams(); paintMissing(); });
 			const pMax = textField(d.maxLength, 'max length');
 			pMax.inputMode = 'numeric';
 			pMax.addEventListener('input', () => { d.maxLength = pMax.value; });
@@ -11812,10 +12173,24 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 			pPreset.addEventListener('input', () => { d.preset = pPreset.value; });
 			const pOptions = textField(d.options, 'values, comma-separated');
 			pOptions.addEventListener('input', () => { d.options = pOptions.value; });
-			const remove = button([icon('close')], { class: 'ghost round', title: 'Remove parameter' });
-			remove.addEventListener('click', () => { drafts.splice(i, 1); paintParams(); });
-			return el('div', { class: 'param-row' },
-				pName, pType, d.type === 'text' ? pMax : undefined, d.type === 'choice' ? pOptions : undefined, pPreset, remove);
+			const put = button([icon('insert')], { class: 'ghost round', title: 'Insert {{name}} into the prompt' });
+			put.addEventListener('mousedown', event => event.preventDefault());
+			put.addEventListener('click', () => {
+				const target = lastPrompt?.isConnected ? lastPrompt : prompt;
+				if (d.name.trim()) {
+					// The target's own editor back to writing (`applyFieldEdit`), whichever prompt it is.
+					insertPlaceholder(target, d.name.trim());
+				} else {
+					pName.focus();
+				}
+			});
+			const remove = button([icon('trash')], { class: 'ghost round', title: 'Remove parameter' });
+			remove.addEventListener('click', () => { drafts.splice(i, 1); paintParams(); paintMissing(); });
+			const row = el('div', { class: 'param-row' },
+				el('span', { class: 'param-brace', text: '{{' }), pName, el('span', { class: 'param-brace', text: '}}' }),
+				pType, d.type === 'text' ? pMax : undefined, d.type === 'choice' ? pOptions : undefined, pPreset, put, remove);
+			row.dataset.param = d.name.trim();
+			return row;
 		}));
 	};
 	paintParams();
@@ -11827,31 +12202,35 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 	});
 
 	const error = el('div', { class: 'form-error' });
+	error.setAttribute('role', 'alert');
 	showEditorError = message => { error.textContent = message; };
-	const save = button([el('span', { text: skill ? 'Save' : 'Add to toolbar' })], { class: 'primary' });
+	const save = button([icon(skill ? 'check' : 'add'), el('span', { text: skill ? 'Save' : 'Add to toolbar' })], { class: 'primary', title: `${skill ? 'Save' : 'Add to toolbar'} (${isMacView ? '⌘' : 'Ctrl+'}Enter)` });
 	const cancel = button([el('span', { text: 'Cancel' })], { class: 'ghost' });
 	cancel.addEventListener('click', () => closePopups());
+	const fail = (message: string, field?: HTMLElement) => {
+		error.textContent = message;
+		field?.focus();
+		field?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+	};
 	save.addEventListener('click', () => {
 		error.textContent = '';
 		const n = name.value.trim();
 		if (!/^[a-z0-9][a-z0-9:._-]{0,63}$/.test(n)) {
-			error.textContent = 'The name is one word of lower-case letters, digits, "-", "_", ":" or "." — no spaces.';
-			name.focus();
+			fail('The name is one word of lower-case letters, digits, "-", "_", ":" or "." — no spaces.', name);
 			return;
 		}
 		if (!prompt.value.trim()) {
-			error.textContent = 'The prompt is empty.';
-			prompt.focus();
+			promptEditor.write();
+			fail('The prompt is empty.', prompt);
 			return;
 		}
 		if (notifyMode === 'text' && !notifyText.value.trim()) {
-			error.textContent = 'The notification text is empty.';
-			notifyText.focus();
+			fail('The notification text is empty.', notifyText);
 			return;
 		}
 		const emptyStep = steps.findIndex(step => !step.prompt.trim() && step.check.trim());
 		if (emptyStep >= 0) {
-			error.textContent = `Prompt ${emptyStep + 2} has a check but no prompt.`;
+			fail(`Prompt ${emptyStep + 2} has a check but no prompt.`);
 			return;
 		}
 		post({
@@ -11871,36 +12250,53 @@ function openSkillEditor(skill?: ToolbarSkill): void {
 		});
 	});
 
-	skillEditor.replaceChildren(
-		panelHead(skill ? 'Edit toolbar skill' : 'Add skill to toolbar'),
-		el('div', { class: 'skill-form' },
-			formRow('Name', name, 'Called as /name or $name; lower case, no spaces.'),
-			formRow('Prompt', prompt, 'Type / or $ for a skill, and {{parameter}} where a value goes.'),
-			el('div', { class: 'form-row' },
-				el('span', { class: 'form-label', text: 'Next prompts' }),
-				el('span', { class: 'form-hint', text: 'Sent one after another, each once the agent has finished the one before — like messages queued with ⌘Enter. A check between two stops the skill there unless it holds.' }),
-				stepList, addStep),
-			formRow('Available in', agents),
-			el('div', { class: 'form-row' }, el('span', { class: 'form-label', text: 'Result' }), resultGroup),
+	const area = el('div', { class: 'skill-form' }, el('div', { class: 'skill-form-inner' },
+		el('div', { class: 'skill-preview' }, previewButton, previewMeta),
+		el('div', { class: 'form-grid' },
+			formRow('Name', nameField, 'One word, lower case — called as /name or $name.'),
+			formRow('Available in', agents)),
+		el('div', { class: 'form-row prompt-row' },
+			el('span', { class: 'form-label', text: 'Prompt' }),
+			promptEditor.node,
+			missing,
+			el('span', { class: 'form-hint', text: 'Markdown is supported. Type / or $ for a skill, and {{parameter}} where a value goes.' })),
+		skillSection('symbol-parameter', 'Parameters', 'Asked for when the skill runs; each is required. Use {{name}} in a prompt.', paramList, addParam),
+		skillSection('debug-step-over', 'Next prompts', 'Sent one after another, each once the agent has finished the one before — like messages queued with ⌘Enter. A check between two stops the skill there unless it holds.', stepList, addStep),
+		skillSection('output', 'Result', undefined, resultGroup,
 			el('div', { class: 'form-row' }, el('span', { class: 'form-label', text: 'Notify when it ends' }), notifyPick, notifyTextRow,
-				el('span', { class: 'form-hint', text: 'A VS Code notification when the skill is done or something went wrong — not when you stop it. A notification pauses a browser tab on screen until it is dismissed.' })),
+				el('span', { class: 'form-hint', text: 'When the skill is done or something went wrong — not when you stop it. A notification pauses a browser tab on screen until it is dismissed.' }))),
+		skillSection('paintcan', 'Appearance', undefined,
 			el('div', { class: 'form-row' }, el('span', { class: 'form-label', text: 'Icon' }), iconButton, iconPanel),
+			el('div', { class: 'form-grid' }, formRow('Label', label), formRow('Tooltip', tooltip)),
 			el('div', { class: 'form-row' }, el('span', { class: 'form-label', text: 'Colours' }),
 				el('div', { class: 'color-parts' },
 					el('span', { class: 'form-hint', text: 'Text' }), colors.text.node,
 					el('span', { class: 'form-hint', text: 'Border' }), colors.border.node,
-					el('span', { class: 'form-hint', text: 'Icon' }), colors.icon.node)),
-			formRow('Label', label, 'Shown beside the icon.'),
-			formRow('Tooltip', tooltip),
-			el('div', { class: 'form-row' },
-				el('span', { class: 'form-label', text: 'Parameters' }),
-				el('span', { class: 'form-hint', text: 'Asked for when the skill runs; each is required. Use {{name}} in the prompt.' }),
-				paramList, addParam),
-			error,
-			el('div', { class: 'form-actions' }, cancel, save)));
+					el('span', { class: 'form-hint', text: 'Icon' }), colors.icon.node)))));
+	const footer = el('div', { class: 'skill-editor-footer' }, error, el('div', { class: 'form-actions' }, cancel, save));
+	skillEditor.replaceChildren(panelHead(skill ? `Edit /${skill.name}` : 'Add skill to toolbar'), area, footer);
+	skillEditor.onkeydown = event => {
+		if (event.key === 'Enter' && !event.isComposing && (isMacView ? event.metaKey : event.ctrlKey) && !event.defaultPrevented) {
+			// Stopped too, or the workbench acts on the same key (the webview forwards every key).
+			event.preventDefault();
+			event.stopPropagation();
+			save.click();
+		}
+	};
+	paintSteps();
+	paintPreview();
+	paintMissing();
+	skillFormResize.disconnect();
+	skillFormArea = area;
+	skillFormResize.observe(area);
 	closePopups(skillEditor);
 	showScreenOverlay(skillEditor);
-	name.focus();
+	fitEditorFields();
+	(skill ? prompt : name).focus();
+	if (skill) {
+		prompt.setSelectionRange(0, 0);
+		area.scrollTop = 0;
+	}
 }
 
 /**
@@ -11912,6 +12308,7 @@ function promptField(value: string, placeholder: string, rows: number): HTMLText
 	field.value = value;
 	field.rows = rows;
 	field.placeholder = placeholder;
+	field.spellcheck = false;
 	field.addEventListener('input', () => followInlineToken(field));
 	field.addEventListener('keydown', event => {
 		if (paletteMode === 'inline' && paletteTarget === field && paletteKey(event)) {

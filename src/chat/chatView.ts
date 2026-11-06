@@ -1444,6 +1444,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				project: tabProject(tab.cwd, tab.chat.copy?.repo, tab.projectRoot === undefined && isHome(tab.cwd)),
 				canResumeInTerminal: !!tab.chat.ref,
 				mark: tab.chat.mark,
+				...(tab.pinned ? { pinned: true } : {}),
 				title: tab.title ?? vscode.l10n.t("New chat"),
 				agent: tab.started ? tab.chat.agent : undefined,
 				...this._tabModel(tab),
@@ -2012,6 +2013,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._tabs.find(t => t.id === message.id)?.setMark(mark);
 				return;
 			}
+			case 'pinTab':
+				if (typeof message.pinned === 'boolean') { this._pinTab(message.id, message.pinned); }
+				return;
 			case 'closeTab':
 				this._closeTab(message.id);
 				return;
@@ -7494,9 +7498,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._tabs.push(new ChatTab(this._tabHost, chat));
 			}
 		}
+		const pinned = new Set(strings(saved?.pinned));
 		for (const tab of this._tabs) {
 			const mode = ultracodes[tab.chat.id];
 			if (typeof mode === 'boolean') { tab.chat.ultracode = mode; }
+			tab.pinned = pinned.has(tab.chat.id);
 		}
 		if (!this._tabs.length) {
 			this._tabs.push(new ChatTab(this._tabHost, newChat(this._remembered.agent ?? 'claude')));
@@ -7516,6 +7522,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			project: this._projectId,
 			ids: this._tabs.map(t => t.chat.id),
 			ultracodes: Object.fromEntries(this._tabs.map(t => [t.chat.id, t.chat.ultracode])),
+			pinned: this._tabs.filter(t => t.pinned).map(t => t.chat.id),
 			fresh: this._tabs.filter(t => !t.started).map(t => t.chat.id),
 			// A tab renamed before anything was sent from it has no history entry to
 			// keep its name in.
@@ -7561,6 +7568,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		this._post();
 		this._focusInput();
 		return tab;
+	}
+
+	/**
+	 * Pins a tab (asked for: a click on it does). At that moment, and only then, it moves
+	 * to just after the last pinned tab — never further from the start than it already is.
+	 */
+	private _pinTab(id: string, pinned: boolean): void {
+		const tab = this._tabs.find(t => t.id === id);
+		if (!tab || tab.pinned === pinned) { return; }
+		tab.pinned = pinned;
+		if (pinned) {
+			const from = this._tabs.indexOf(tab);
+			const others = this._tabs.filter(t => t !== tab);
+			let lastPinned = -1;
+			others.forEach((t, i) => { if (t.pinned) { lastPinned = i; } });
+			const to = Math.min(from, lastPinned + 1);
+			if (to !== from) { this._tabs.splice(from, 1); this._tabs.splice(to, 0, tab); }
+		}
+		this._post();
 	}
 
 	private _placeTab(id: string, target: string, after: boolean): void {

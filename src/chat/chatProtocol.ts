@@ -872,6 +872,11 @@ export interface ChatTabSummary {
 	readonly project?: { readonly id: string; readonly name: string };
 	/** The emoji leading `title`, if the user put one on the tab. */
 	readonly mark?: string;
+	/**
+	 * The user pinned the tab — by clicking it, or from its menu. Its underline has a colour of
+	 * its own and closing it asks first. Not the terminals pinned to the conversation (`terminals`).
+	 */
+	readonly pinned?: boolean;
 	/** Absent while the conversation has not started, and so belongs to no agent yet. */
 	readonly agent?: AgentId;
 	/** One short line for under the title: the agent id and the model as its agent labels it (`codex → astra6`), when it can be told. */
@@ -1154,6 +1159,8 @@ export type ViewToHost =
 	| { readonly type: 'moveTabTo'; readonly id: string; readonly target: string; readonly draft: string }
 	| { readonly type: 'moveTabToNew'; readonly id: string; readonly draft: string; readonly location: 'tab' | 'window' }
 	| { readonly type: 'selectTab'; readonly id: string }
+	/** Pins or unpins a conversation tab. Pinning moves it to after the last pinned tab, once. */
+	| { readonly type: 'pinTab'; readonly id: string; readonly pinned: boolean }
 	| { readonly type: 'closeTab'; readonly id: string }
 	/** A tab renamed by double-click; the chat keeps the name, and the first message no longer sets one. */
 	| { readonly type: 'renameTab'; readonly id: string; readonly title: string }

@@ -256,6 +256,7 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/translate/translateText.ts](src/translate/translateText.ts) — languages, the prompt, checks on what the assistant writes back (leaf, under test)
 - [src/translate/translateScript.ts](src/translate/translateScript.ts) — the page-side translator behind `browser_text_segments` / `browser_replace_text`
 - [preview-src/tabProjects.ts](preview-src/tabProjects.ts) — chat tabs grouped by project for the bar, the drawer and the tab list (leaf, under test)
+- [preview-src/markdownEdit.ts](preview-src/markdownEdit.ts) — the skill editor's Markdown edits (bold, lists, code block, link) and its `{{name}}` reading (leaf, under test)
 - [src/chat/chatView.ts](src/chat/chatView.ts) — the AI Browser chat: the webview view, its tabs, history, attachments, usage, switching agents
 - [src/chat/chatTab.ts](src/chat/chatTab.ts) — one conversation of the chat: its session, its turns, its agents
 - [src/chat/toolbarText.ts](src/chat/toolbarText.ts) — toolbar skills as text: what may be stored, parameters filled in, the agent's own sigils, the clipboard result markers (leaf, under test)
@@ -6590,6 +6591,38 @@ toolbar; at most 30, prompts up to 20 000 characters.
   host checks what it saves (`validToolbarSkill` in `toolbarText.ts`) and answers `toolbarSaved`
   (the editor closes) or `toolbarError` (it stays, with the reason): a name taken by another
   toolbar skill, a malformed parameter, a preset that does not fit its type.
+- **The editor's layout** (asked for, 2026-11-06): a live preview of the button at the top, then
+  Name and Available in side by side, the prompt, and sections — Parameters, Next prompts, Result
+  (four cards), Appearance — with Cancel / Save in a footer that stays put while the form scrolls;
+  ⌘Enter (Ctrl+Enter) saves, and a refusal focuses and scrolls to the field it is about.
+- **The prompt grows with its text up to the whole height of the editor** (`fitField`): its
+  height follows `scrollHeight`, capped by the `.skill-form`'s visible height less the Markdown
+  bar, and only then scrolls inside itself; a next prompt grows to a third of it
+  (`data-grow`). A `ResizeObserver` on the form refits on resize. Typing keeps the caret in view
+  and the form's own scroll where it was. The expand button forces the full height.
+- **Markdown in every prompt** (`markdownEditor`): a toolbar (bold, italic, inline code, link,
+  heading, bullet / numbered / task list, quote, code block, insert a parameter), ⌘B / ⌘I / ⌘E /
+  ⌘K, list continuation on Enter and Tab (`composerListEdit`), and a Write / Preview pair; the
+  preview is `renderMarkdown` with `{{name}}` marked, orange where no parameter has that name.
+  The edits are [preview-src/markdownEdit.ts](preview-src/markdownEdit.ts) (leaf, under test),
+  applied with `execCommand('insertText')` so ⌘Z undoes them. The prompt goes to the agent as
+  typed — Markdown is only how it is written. **The placeholder pattern is written twice**, there
+  and in `fillPrompt` (`toolbarText.ts`); change both. A `{{name}}` with no parameter is listed
+  under the prompt with a one-click Add.
+- **A key the editor takes is stopped, not only prevented** (`stopPropagation` beside
+  `preventDefault`, for ⌘B / ⌘I / ⌘E / ⌘K and ⌘Enter): VS Code's webview wrapper listens for
+  `keydown` on the window and forwards every key to the workbench without looking at
+  `defaultPrevented` (`handleInnerKeydown` in the shipped `webview/browser/pre/index.html`), so ⌘B
+  bolded the text *and* toggled the side bar, and ⌘K started a chord. The terminal's keys follow
+  the same rule.
+- **`applyFieldEdit` writes only into a field that took the focus.** `execCommand` acts on
+  whatever is focused, and a field whose editor shows the preview is hidden and cannot take it: the
+  parameter row's insert button (which keeps the focus where it was) typed `{{name}}` into the
+  parameter's own name box. The field's editor (`fieldEditors`) is put back to writing first, and
+  a field that still did not take the focus is edited with `setRangeText`.
+- **The bar's tools wrap, they never scroll**: a hidden horizontal scroll put the last tools out of
+  sight in a side bar. And `.md-field[hidden]` needs its own `display: none`, since the field's
+  `display: block` outranks the attribute — Preview showed the text and the rendering together.
 - **The editor outlives the view losing focus.** A blur of the webview (a click into a file,
   Cmd+Tab, the editor's own native colour picker) or the view being hidden closes menus and
   questions, never a form holding unsaved input: the skill editor, the Chat Settings panel, and
@@ -7421,11 +7454,11 @@ re-runs it. **While tabs overflow, the row reads: the tabs still shown, stretche
 
 | Mark | When |
 |---|---|
-| a chat bubble blinking in the warning colour (a pulsing ring in the collapsed rail and the tab list) | an approval in the tab waits for an answer — it outranks working, since the agent is stopped on the user and the tab may not be the one in front |
-| a chat bubble pulsing green (the liquid loader in the collapsed rail and the tab list) | a turn or an agent of the tab runs (`busy`); stays still under reduced motion |
+| a chat bubble blinking in the warning colour (a pulsing ring in the collapsed rail) | an approval in the tab waits for an answer — it outranks working, since the agent is stopped on the user and the tab may not be the one in front |
+| a chat bubble pulsing green (the liquid loader in the collapsed rail; the tab list shows the bubble, never a spinner — asked for) | a turn or an agent of the tab runs (`busy`); stays still under reduced motion |
 | a blue check | the work ended while nobody was looking at the tab |
 | an orange error icon | the work ended in an error: an error entry or a failed agent since the last message, or the backend replaced under a running turn |
-| a plain chat bubble | finished and read, or nothing has been sent from the tab (`tabKindMark`; the tab list shows nothing there — asked for: a grey square said nothing a plain tab does not) |
+| a plain chat bubble | finished and read, or nothing has been sent from the tab (`tabKindMark`, which the tab list draws too, in the same slot as its terminal icon) |
 
 - **The end of the work is a change between two posts**, busy then idle, so `ChatTab._post`
   compares the two on every change rather than any one path marking it — a turn's end, a send
@@ -7480,6 +7513,24 @@ re-runs it. **While tabs overflow, the row reads: the tabs still shown, stretche
     before the rename does not flick the old name back.
   - **A named tab is not "empty"**: a chat from the history opens in a new tab instead of over it,
     and "Close this chat, start …" keeps the name on the tab it reuses.
+- **A click on the conversation tab already in front pins it** (asked for) — in the strip or the
+  drawer (`pinOnClick`, which posts `pinTab` only where the control is on, so Chrome and the website
+  see no refusal line). **A click that selects another tab only selects it**: pinning on every
+  click turned each tab the user switched to yellow. "In front" is `frontStripId`, never
+  `activeTab`, which still names the conversation behind a terminal in front — a click to go back
+  to it is a selection. The pin waits out `doubleClickMs` (600 ms, the strip's own double-click
+  window — `multiClickMs`, 300, let a slower double-click pin and then rename) and a
+  double-click cancels it (`pinTimer`), since a double-click renames; the `+N` list never pins, the
+  tab menu's Pin row does. At that moment, and only then, the host moves it to just after the last
+  pinned tab, never further from the start than it was (`_pinTab`); dragging it later is free. A
+  pinned tab's underline is the theme's chart yellow, faint behind, full in front (`.tab.pinned`,
+  last in `chat.css` so it wins the drawer's and rail's border ties). **Closing a pinned tab asks
+  first**, in the same popover as a busy tab ("… is pinned. Are you sure you want to close it?",
+  `asksBeforeClose`), Cmd+W included; the tab menu has Pin / Unpin. The flag lives on the
+  `ChatTab`, not the chat — kept in `openTabs` (`pinned`), not in the history — so it moves with
+  the tab between surfaces and a chat reopened from the history starts unpinned. Not to be
+  confused with terminals pinned to a conversation (`ChatTabSummary.terminals`). Editor-only
+  (`pinTab` in `commands.ts`). **Not run inside VS Code yet.**
 - **A tab can carry a label, one emoji** (right-click → Add label…, a grid of emoji; Change / Remove label): `StoredChat.mark`, put in front of the title (`ChatTab.setMark`, `_marked` on rename, the first message and a generated title), so every place that shows the title shows it. A fresh tab with a label reads "🔥 New chat"; its label is not kept across a reload until something is sent. Editor-only (`setTabMark` in `commands.ts`); the host takes only a pictograph with its modifiers.
 - **Closing a tab stops what it runs** — its turn and its agents — and keeps the chat in the
   history. A tab that is working asks first, in a popover under the tab (`placeTabConfirm`,
@@ -11072,6 +11123,19 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      without it the text has the whole height.
 
 ## Special cases and non-obvious decisions
+
+### A bare `<input>` or `<button>` in a chat card is unstyled
+
+`chat.css` resets `button` to nothing (no border, no background) and styles no `input` globally,
+so a card that creates either without a class shows a white system search field and buttons that
+read as plain text — the JSON card (`jsonView`) and the table card (`tableView`) both did. Use the
+shared pieces: `searchField()` ([preview-src/searchField.ts](preview-src/searchField.ts) — magnifier,
+themed input, a clear button while it holds text, Escape clears without leaving the card) and the
+`.soft-button` class for a secondary action (`.rich-link` for a link, `.ghost` for a toolbar icon).
+The JSON tree colours values by type from `debugTokenExpression.*`, the way the debugger shows
+them, and its per-line Copy value appears on hover or keyboard focus (always where there is no
+hover). `artifactSmoke.ts` reads the table's count through `.artifact-table-count`: the pager
+buttons hold `<span>`s now.
 
 ### Chats created by agents keep their own history budget
 

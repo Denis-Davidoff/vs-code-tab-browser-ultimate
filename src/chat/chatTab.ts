@@ -474,6 +474,8 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 		return this._visualizationWork;
 	}
 	public readonly id = generateUuid();
+	/** Pinned by the user (`pinTab`): kept with the open tabs, not with the chat, so the history knows nothing of it. */
+	public pinned = false;
 	private _chat: StoredChat;
 	private _session: AgentSession | undefined;
 	private _sessionEvents: vscode.Disposable | undefined;

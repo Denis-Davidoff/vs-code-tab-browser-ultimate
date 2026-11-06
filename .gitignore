@@ -16,6 +16,7 @@ chrome-extension/dist/
 chrome-extension/*.zip
 !chrome-extension/ai-browser-chrome-0.6.0.zip
 !chrome-extension/ai-browser-chrome-0.6.1.zip
+!chrome-extension/ai-browser-chrome-0.6.3.zip
 chrome-extension/*.zip.tmp
 node_modules/
 

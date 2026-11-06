@@ -54,7 +54,7 @@ export async function checkArtifactCards(frame: HTMLIFrameElement, state: ChatVi
 	headers[1].click();
 	assert(tableRoot.querySelector('tbody tr td:nth-child(2)')?.textContent === '201', 'Numeric descending sort failed.');
 	const next = tableRoot.querySelectorAll<HTMLButtonElement>('.artifact-table-footer button')[1]; next.click();
-	assert(tableRoot.querySelector('.artifact-table-footer span')?.textContent === '101–200 of 201 rows', 'Table page navigation failed.');
+	assert(tableRoot.querySelector('.artifact-table-count')?.textContent === '101–200 of 201 rows', 'Table page navigation failed.');
 	const search = tableRoot.querySelector<HTMLInputElement>('input')!;
 	search.value = 'Row 200'; search.dispatchEvent(new Event('input'));
 	assert(tableRoot.querySelectorAll('tbody tr').length === 1, 'Table filtering failed.');

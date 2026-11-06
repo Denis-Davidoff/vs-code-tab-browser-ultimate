@@ -3140,6 +3140,8 @@ button {
 .tab-overflow-row .menu-label { white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
 .tab-overflow-row { align-items: flex-start; }
 .tab-overflow-row > .codicon, .tab-overflow-row > .tab-mark, .tab-overflow-row > .liquid-loader { margin-top: 2px; }
+/* On the first line of a name that may wrap, in the slot the menu's own icons take. */
+.tab-overflow-row > .tab-kind { width: 16px; height: 1.35em; align-self: flex-start; }
 .tab-overflow-row.current { background: color-mix(in srgb, var(--vscode-focusBorder, var(--fg)) 14%, transparent); }
 .tab-overflow-row.current .menu-label { font-weight: 600; }
 /* Shown in the strip: a light tint. Only in the list: dimmed and italic. No extra markup (asked for). */
@@ -7157,7 +7159,7 @@ body.vv-locked {
 .artifact-body video { max-height: 540px; }
 .artifact-card .visualization-status:empty { display: none; }
 .artifact-table { margin-top: 8px; }
-.artifact-table input { width: 100%; box-sizing: border-box; margin-bottom: 10px; }
+.artifact-table .inline-search { margin-bottom: 8px; }
 .artifact-table-scroll { overflow: auto; max-height: 540px; }
 .artifact-table table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .artifact-table th, .artifact-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; overflow-wrap: anywhere; max-width: 440px; }
@@ -7166,6 +7168,7 @@ body.vv-locked {
 .artifact-table th[aria-sort='ascending'] button::after { content: ' ↑'; }
 .artifact-table th[aria-sort='descending'] button::after { content: ' ↓'; }
 .artifact-table-footer { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin-top: 10px; }
+.artifact-table-count { color: var(--fg-3); font-size: var(--ctl-font); font-variant-numeric: tabular-nums; text-align: center; }
 .artifact-sources { padding-left: 22px; margin-bottom: 0; }
 .artifact-sources li { margin: 12px 0; }
 .artifact-sources p { margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -7213,17 +7216,120 @@ body.vv-locked {
 .rich-block { margin: 10px 0; overflow-wrap: anywhere; }
 .rich-block > pre { white-space: pre-wrap; max-height: 500px; overflow: auto; }
 .rich-block > small { display: block; color: var(--fg-3); }
-.json-view { padding: 10px; border: 1px solid var(--border); border-radius: var(--radius); }
-.json-view input { width: 100%; box-sizing: border-box; margin-bottom: 10px; }
-.json-tree, .json-search-results { max-height: 540px; overflow: auto; font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; }
-.json-node { padding: 3px 0; overflow-wrap: anywhere; }
-.json-children { margin-left: 18px; border-left: 1px solid var(--border); padding-left: 8px; }
-.json-node > button, .json-search-match button { margin-left: 10px; font-size: 11px; }
-.json-node > details { display: inline-block; vertical-align: top; }
-.json-node summary { cursor: pointer; }
-.json-key { color: var(--vscode-symbolIcon-propertyForeground, var(--fg)); }
-.json-search-match { padding: 5px 0; }
-.citation-button { font-size: 11px; vertical-align: super; cursor: pointer; margin: 0 2px; padding: 0 3px; }
+/* The secondary button of the cards (notice actions, Stop, table paging, Load more):
+   the global `button` reset leaves a bare <button> reading as plain text. */
+.soft-button {
+	display: inline-flex; align-items: center; justify-content: center; gap: var(--ctl-gap-sm);
+	box-sizing: border-box; height: var(--ctl-h-sm); padding: 0 10px;
+	border: 1px solid var(--ctl-border); border-radius: var(--ctl-radius);
+	background: var(--soft); color: var(--fg); font-size: var(--ctl-font); line-height: 1;
+	white-space: nowrap; cursor: pointer;
+	transition: background-color .12s var(--ease), border-color .12s var(--ease);
+}
+.soft-button:hover:not(:disabled) { background: var(--ctl-hover-bg); border-color: var(--ctl-border-hover); }
+.soft-button:active:not(:disabled) { background: var(--ctl-active-bg); }
+.soft-button:focus-visible { outline: var(--ctl-ring); outline-offset: var(--ctl-ring-offset); }
+.soft-button:disabled { opacity: var(--ctl-disabled-opacity); cursor: default; }
+.soft-button .codicon { font-size: 14px; }
+.rich-link {
+	display: inline; padding: 0; text-align: left; cursor: pointer; overflow-wrap: anywhere;
+	color: var(--vscode-textLink-foreground, var(--accent));
+}
+.rich-link:hover { color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground)); text-decoration: underline; }
+.rich-link:focus-visible { outline: var(--ctl-ring); outline-offset: 2px; border-radius: 2px; }
+
+/* The search box of the cards (searchField.ts): magnifier, themed input, clear button while it holds text. */
+.inline-search { position: relative; display: flex; align-items: center; min-width: 0; }
+.inline-search-icon { position: absolute; left: 8px; font-size: 14px; color: var(--fg-3); pointer-events: none; transition: color .12s var(--ease); }
+.inline-search:focus-within .inline-search-icon { color: var(--fg); }
+.inline-search-input {
+	box-sizing: border-box; width: 100%; height: var(--ctl-h); margin: 0; padding: 0 30px 0 28px;
+	border: 1px solid var(--ctl-border); border-radius: var(--ctl-radius);
+	background: var(--vscode-input-background, var(--soft)); color: var(--vscode-input-foreground, var(--fg));
+	font: inherit; font-size: var(--ctl-font); outline: none; appearance: none; -webkit-appearance: none;
+	transition: border-color .12s var(--ease);
+}
+.inline-search-input::placeholder { color: var(--vscode-input-placeholderForeground, var(--fg-3)); opacity: 1; }
+.inline-search-input:hover { border-color: var(--ctl-border-hover); }
+.inline-search-input:focus { border-color: var(--ctl-focus); }
+.inline-search-input::-webkit-search-cancel-button,
+.inline-search-input::-webkit-search-decoration { -webkit-appearance: none; appearance: none; display: none; }
+.inline-search-clear {
+	position: absolute; right: 3px; display: flex; align-items: center; justify-content: center;
+	width: 22px; height: 22px; border-radius: var(--ctl-radius-sm); color: var(--fg-3); cursor: pointer;
+}
+.inline-search-clear:hover { background: var(--ctl-hover-bg); color: var(--fg); }
+.inline-search:has(.inline-search-input:placeholder-shown) .inline-search-clear { display: none; }
+
+/* A JSON result: header, search, then a tree — keys, typed values, and a copy button per line on hover. */
+.json-view { border: 1px solid var(--border); border-radius: var(--radius); background: var(--soft); overflow: hidden; }
+.json-view .json-header { margin: 0; padding: 6px 6px 6px 12px; border-bottom: 1px solid var(--border); }
+.json-title { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-2); }
+.json-copy-all {
+	display: inline-flex; align-items: center; gap: 5px; height: var(--ctl-h-sm); padding: 0 8px;
+	border-radius: var(--ctl-radius); color: var(--fg-3); font-size: var(--ctl-font); cursor: pointer;
+}
+.json-copy-all:hover, .json-copy-all.copied { background: var(--ctl-hover-bg); color: var(--fg); }
+.json-copy-all:focus-visible, .json-copy:focus-visible { outline: var(--ctl-ring); outline-offset: -1px; }
+.json-copy-all .codicon { font-size: 14px; }
+.json-copy-all.copied .codicon, .json-copy.copied .codicon { color: var(--ok); }
+.json-view .json-search { margin: 8px 8px 4px; }
+.json-tree, .json-search-results {
+	max-height: 540px; overflow: auto; padding: 4px 6px 8px;
+	font-family: var(--mono); font-size: var(--mono-size); line-height: 1.5;
+}
+.json-tree[hidden], .json-search-results[hidden] { display: none; }
+.json-node { min-width: 0; }
+.json-line {
+	display: flex; align-items: flex-start; min-height: 22px; padding: 1px 4px; border-radius: 4px; line-height: 20px;
+	list-style: none; overflow-wrap: anywhere;
+}
+.json-line::-webkit-details-marker { display: none; }
+.json-line:hover { background: var(--soft-2); }
+summary.json-line { cursor: pointer; }
+summary.json-line:focus-visible { outline: var(--ctl-ring); outline-offset: -1px; }
+.json-line > .codicon-chevron-right, .json-twistie {
+	flex: none; width: 16px; margin-right: 2px; font-size: 12px; line-height: 20px; text-align: center; color: var(--fg-3);
+	transition: transform .12s var(--ease);
+}
+details[open] > summary.json-line > .codicon-chevron-right { transform: rotate(90deg); }
+.json-key { flex: none; max-width: 60%; color: var(--vscode-debugTokenExpression-name, var(--vscode-symbolIcon-propertyForeground, var(--fg))); overflow-wrap: anywhere; }
+.json-index { color: var(--fg-3); }
+.json-colon { flex: none; margin-right: 6px; color: var(--fg-3); }
+.json-value { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.json-string { color: var(--vscode-debugTokenExpression-string, #ce9178); }
+.json-number { color: var(--vscode-debugTokenExpression-number, #b5cea8); }
+.json-boolean { color: var(--vscode-debugTokenExpression-boolean, #569cd6); }
+.json-null { color: var(--fg-3); font-style: italic; }
+.json-object, .json-array { color: var(--fg-3); }
+body.vscode-light .json-string { color: var(--vscode-debugTokenExpression-string, #a31515); }
+body.vscode-light .json-number { color: var(--vscode-debugTokenExpression-number, #098658); }
+body.vscode-light .json-boolean { color: var(--vscode-debugTokenExpression-boolean, #0000ff); }
+/* Shown on hover or keyboard focus; always shown where there is no hover. */
+.json-copy {
+	flex: none; display: inline-flex; align-items: center; justify-content: center;
+	width: 20px; height: 20px; margin-left: 6px; border-radius: var(--ctl-radius-sm); color: var(--fg-3);
+	cursor: pointer; opacity: 0; transition: opacity .12s var(--ease);
+}
+.json-copy .codicon { font-size: 13px; }
+.json-line:hover > .json-copy, .json-copy:focus-visible, .json-copy.copied { opacity: 1; }
+.json-copy:hover { background: var(--ctl-hover-bg); color: var(--fg); }
+@media (hover: none) { .json-copy { opacity: 1; } }
+.json-children { margin-left: 11px; padding-left: 7px; border-left: 1px solid var(--border); }
+.json-node > details[open] > .json-children:hover { border-left-color: var(--border-strong); }
+.json-more { margin: 4px 0 4px 22px; font-family: var(--vscode-font-family); }
+.json-note { margin: 2px 0 2px 22px; color: var(--fg-3); font-family: var(--vscode-font-family); font-size: var(--ctl-font); }
+.json-search-count { padding: 2px 4px 6px; color: var(--fg-3); font-family: var(--vscode-font-family); font-size: var(--ctl-font); }
+.json-search-results mark {
+	border-radius: 2px; color: inherit;
+	background: var(--vscode-editor-findMatchHighlightBackground, color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 35%, transparent));
+}
+.citation-button {
+	margin: 0 1px; padding: 0 4px; border-radius: 4px; font-size: 10px; line-height: 1.5; vertical-align: super; cursor: pointer;
+	color: var(--vscode-textLink-foreground, var(--accent)); background: var(--soft-2);
+}
+.citation-button:hover { background: var(--ctl-hover-bg); color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground)); }
+.citation-button:focus-visible { outline: var(--ctl-ring); outline-offset: 1px; }
 .assistant-citations:empty { display: none; }
 .assistant-citations { margin: 10px 0; padding-top: 8px; border-top: 1px solid var(--border); }
 .citation-source { display: flex; align-items: baseline; gap: 6px; margin: 5px 0; color: var(--fg-3); font-size: 12px; }
@@ -7515,4 +7621,521 @@ body.vscode-light .project-icon.pc-3 { --pc-l: 34%; }
 
 @media (prefers-reduced-motion: reduce) {
 	.project-chip.calls, .project-mark.waiting { animation: none; }
+}
+
+/* ---------------------------------------------------------------- the skill editor
+   A head, a scrolling form and a footer that stays: the error and the actions
+   are always in reach. The prompt grows with what it holds, up to the form's
+   visible height (`fitField` in chat.ts sets the height). */
+
+.skill-editor .skill-form {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 14px 16px 20px;
+	scroll-padding-block: 12px;
+}
+
+.skill-form-inner {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	max-width: 760px;
+	margin: 0 auto;
+}
+
+.skill-form-inner > .form-row,
+.skill-form-inner .form-grid > .form-row {
+	padding: 0;
+}
+
+.skill-editor .form-row { gap: 5px; }
+
+.skill-editor .form-label {
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: .02em;
+	color: var(--fg-2);
+}
+
+.skill-editor .form-hint { line-height: 1.4; }
+
+.form-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+	gap: 12px;
+}
+
+.skill-editor .form-grid select.form-input { height: var(--ctl-h); cursor: pointer; }
+
+/* The button as it will stand in the toolbar. */
+.skill-preview {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	min-width: 0;
+	padding: 12px 14px;
+	border: 1px dashed var(--border-strong);
+	border-radius: 10px;
+	background:
+		radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--vscode-foreground) 10%, transparent) 1px, transparent 0) 0 0 / 12px 12px,
+		var(--soft);
+}
+
+.skill-preview-button {
+	flex: none;
+	pointer-events: none;
+}
+
+.skill-preview-meta {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 0 6px;
+	min-width: 0;
+	font-size: 12px;
+	color: var(--fg-3);
+}
+
+.skill-preview-name {
+	font-family: var(--mono);
+	font-weight: 600;
+	color: var(--fg);
+	overflow-wrap: anywhere;
+}
+
+.skill-preview-tip {
+	flex-basis: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* The name with its sigil in front, one field. */
+.name-field {
+	display: flex;
+	align-items: center;
+	height: var(--ctl-h);
+	box-sizing: border-box;
+	border: 1px solid var(--vscode-input-border, var(--border-strong));
+	border-radius: var(--ctl-radius);
+	background: var(--vscode-input-background, var(--surface));
+}
+
+.name-field:focus-within {
+	border-color: var(--ctl-focus);
+	box-shadow: 0 0 0 1px var(--ctl-focus);
+}
+
+.name-sigil {
+	padding: 0 0 0 var(--ctl-pad-x, 8px);
+	font-family: var(--mono);
+	font-weight: 600;
+	color: var(--accent);
+}
+
+.name-field input.form-input {
+	flex: 1;
+	min-width: 0;
+	height: 100%;
+	min-height: 0;
+	padding-left: 3px;
+	border: none;
+	background: transparent;
+	font-family: var(--mono);
+}
+
+.name-field input.form-input:focus-visible { outline: none; }
+
+/* The prompt: a Markdown toolbar over the field, one framed box. */
+.md-editor {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	border: 1px solid var(--vscode-input-border, var(--border-strong));
+	border-radius: 8px;
+	background: var(--vscode-input-background, var(--surface));
+	overflow: hidden;
+	transition: border-color .12s, box-shadow .12s;
+}
+
+.md-editor:focus-within {
+	border-color: var(--ctl-focus);
+	box-shadow: 0 0 0 1px var(--ctl-focus);
+}
+
+.md-bar {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 2px 6px;
+	min-height: 30px;
+	padding: 2px 4px;
+	border-bottom: 1px solid var(--border);
+	background: var(--soft);
+}
+
+.md-tools {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 1px;
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+/* In a narrow side bar the tabs and the expand button take a row of their own,
+   on the right, rather than pushing tools out of sight. */
+.md-bar-end {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	flex: none;
+	margin-left: auto;
+}
+
+.skill-editor button.md-tool {
+	flex: none;
+	width: 24px;
+	height: 24px;
+	min-width: 0;
+	padding: 0;
+	border: none;
+	color: var(--fg-2);
+}
+
+.skill-editor button.md-tool:hover {
+	background: var(--ctl-hover-bg);
+	color: var(--fg);
+}
+
+.md-tool .codicon { font-size: 14px; }
+
+.md-sep {
+	flex: none;
+	width: 1px;
+	height: 14px;
+	margin: 0 3px;
+	background: var(--border-strong);
+}
+
+.md-tabs {
+	display: inline-flex;
+	padding: 2px;
+	border-radius: 6px;
+	background: var(--soft-2);
+}
+
+.skill-editor button.md-tab {
+	height: 20px;
+	padding: 0 8px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--fg-2);
+	font-size: 11px;
+	cursor: pointer;
+}
+
+.skill-editor button.md-tab[aria-selected="true"] {
+	background: var(--vscode-input-background, var(--bg));
+	color: var(--fg);
+	font-weight: 600;
+	box-shadow: 0 1px 2px color-mix(in srgb, #000 18%, transparent);
+}
+
+.md-editor textarea.form-input.md-field {
+	display: block;
+	width: 100%;
+	min-height: 7.5em;
+	padding: 10px 12px;
+	border: none;
+	border-radius: 0;
+	background: transparent;
+	resize: none;
+	line-height: 1.55;
+	tab-size: 4;
+}
+
+.md-editor textarea.md-field:focus-visible { outline: none; }
+
+/* The field's own `display: block` would outrank the `hidden` attribute in Preview. */
+.md-editor textarea.form-input.md-field[hidden] { display: none; }
+
+.step-row .md-editor textarea.form-input.md-field { min-height: 4.6em; }
+
+.md-editor.md-expanded { border-color: var(--accent); }
+
+.md-preview {
+	box-sizing: border-box;
+	padding: 10px 14px;
+	overflow-y: auto;
+	overflow-wrap: anywhere;
+	line-height: 1.55;
+}
+
+.md-preview[hidden] { display: none; }
+
+.md-preview .md-empty {
+	color: var(--fg-3);
+	font-style: italic;
+}
+
+.param-token {
+	padding: 0 3px;
+	border-radius: 4px;
+	background: color-mix(in srgb, var(--vscode-charts-blue, var(--accent)) 18%, transparent);
+	color: var(--vscode-charts-blue, var(--accent));
+	font-family: var(--mono);
+	font-size: .92em;
+}
+
+.param-token.unknown {
+	background: color-mix(in srgb, var(--vscode-charts-orange, orange) 18%, transparent);
+	color: var(--vscode-charts-orange, orange);
+}
+
+/* Placeholders the prompts use that name no parameter yet. */
+.param-missing {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 8px;
+	border-radius: 6px;
+	background: color-mix(in srgb, var(--vscode-charts-orange, orange) 10%, transparent);
+	color: var(--fg-2);
+	font-size: 12px;
+}
+
+.param-missing[hidden] { display: none; }
+
+.param-missing > .codicon { color: var(--vscode-charts-orange, orange); }
+
+.skill-editor button.param-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	height: 22px;
+	padding: 0 8px 0 5px;
+	border: 1px solid color-mix(in srgb, var(--vscode-charts-orange, orange) 45%, transparent);
+	border-radius: 999px;
+	background: transparent;
+	color: var(--fg);
+	font-family: var(--mono);
+	font-size: 11px;
+	cursor: pointer;
+}
+
+.skill-editor button.param-chip:hover { background: color-mix(in srgb, var(--vscode-charts-orange, orange) 16%, transparent); }
+
+.param-chip .codicon { font-size: 12px; }
+
+/* Sections: a titled part, a line above. */
+.skill-section {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding-top: 14px;
+	border-top: 1px solid var(--border);
+}
+
+.skill-section-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--fg);
+}
+
+.skill-section-head .codicon {
+	font-size: 14px;
+	color: var(--fg-2);
+}
+
+.skill-section-title {
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: .06em;
+	text-transform: uppercase;
+}
+
+.skill-section-hint {
+	margin: -4px 0 0;
+	font-size: 12px;
+	line-height: 1.45;
+	color: var(--fg-3);
+}
+
+.skill-section > .param-list + button,
+.skill-section > .step-list + button { align-self: flex-start; }
+
+/* Parameters, one row each, the name between braces. */
+.skill-editor .param-row {
+	gap: 6px;
+	padding: 6px 6px 6px 10px;
+	border-radius: 8px;
+	background: var(--soft);
+}
+
+.param-brace {
+	flex: none;
+	font-family: var(--mono);
+	color: var(--fg-3);
+}
+
+.skill-editor .param-row .param-brace + .form-input { flex: 0 1 120px; font-family: var(--mono); }
+
+.param-row.unused { border-style: dashed; }
+
+.param-row.unused .param-brace { color: var(--vscode-charts-orange, orange); }
+
+.skill-editor .param-row .ghost.round,
+.skill-editor .step-head .ghost.round {
+	width: 24px;
+	height: 24px;
+	flex: none;
+	color: var(--fg-2);
+}
+
+/* The prompts after the first, chained by their checks. */
+.skill-editor .step-list { gap: 10px; }
+
+.skill-editor .step-row {
+	gap: 6px;
+	padding: 10px;
+	border-radius: 10px;
+	background: var(--soft);
+}
+
+.step-gate {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--fg-3);
+}
+
+.step-gate .codicon { font-size: 13px; }
+
+.skill-editor .step-head {
+	justify-content: flex-start;
+	gap: 8px;
+	margin-top: 2px;
+}
+
+.step-head .ghost.round { margin-left: auto; }
+
+.step-badge {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 18px;
+	height: 18px;
+	border-radius: 50%;
+	background: var(--vscode-badge-background, var(--soft-2));
+	color: var(--vscode-badge-foreground, var(--fg));
+	font-size: 10px;
+	font-weight: 700;
+}
+
+.skill-editor textarea.form-check {
+	resize: none;
+	min-height: 0;
+	line-height: 1.45;
+}
+
+/* Where the result goes: four cards, the chosen one marked. */
+.result-cards {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+	gap: 8px;
+}
+
+.result-card {
+	position: relative;
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+	padding: 10px 12px;
+	border: 1px solid var(--border-strong);
+	border-radius: 8px;
+	cursor: pointer;
+	transition: border-color .12s, background .12s;
+}
+
+.result-card:hover { background: var(--soft); }
+
+.result-card:has(input:checked) {
+	border-color: var(--accent);
+	background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.result-card:has(input:focus-visible) { outline: var(--ctl-ring); outline-offset: 1px; }
+
+.result-card input[type="radio"] {
+	position: absolute;
+	opacity: 0;
+	pointer-events: none;
+}
+
+.result-icon {
+	flex: none;
+	margin-top: 1px;
+	font-size: 16px;
+	color: var(--fg-2);
+}
+
+.result-card:has(input:checked) .result-icon { color: var(--accent); }
+
+.result-text {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+
+.result-title { font-weight: 600; }
+
+.skill-editor .icon-pick { height: var(--ctl-h); padding: 0 10px; }
+
+.skill-editor .icon-grid { max-height: 220px; }
+
+/* The footer stays: the error, then the actions. */
+.skill-editor-footer {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 10px 16px;
+	border-top: 1px solid var(--border);
+	background: var(--bg);
+}
+
+.skill-editor-footer .form-error {
+	flex: 1;
+	min-width: 0;
+	padding: 0;
+}
+
+.skill-editor-footer .form-actions {
+	margin-left: auto;
+	padding: 0;
+}
+
+.skill-editor-footer .form-actions button.primary .codicon { font-size: 14px; }
+
+@media (prefers-reduced-motion: reduce) {
+	.md-editor, .result-card { transition: none; }
+}
+
+/*
+ * A pinned conversation tab (clicked, or pinned from its menu): its underline takes the
+ * theme's chart yellow — faint while it is not in front, full when it is. Last in the file,
+ * so it wins the ties with the drawer's and the rail's own border rules.
+ */
+.tab.pinned {
+	border-bottom-color: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 55%, transparent);
+}
+
+.tab.pinned.active {
+	border-bottom-color: var(--vscode-charts-yellow, #cca700);
 }

@@ -1,4 +1,5 @@
 import type { ArtifactSnapshot, VisualizationReference, VisualizationSnapshot, TableData } from '../src/chat/visualizationProtocol';
+import { searchField } from './searchField';
 
 export interface ArtifactActions {
 	download?(revision: string, artifact: ArtifactSnapshot): void;
@@ -122,13 +123,20 @@ function fill(view: View, artifact: ArtifactSnapshot, actions: ArtifactActions):
 }
 function tableView(data: TableData): HTMLElement {
 	const root = document.createElement('div'); root.className = 'artifact-table';
-	const search = document.createElement('input'); search.type = 'search'; search.placeholder = 'Filter rows…'; search.setAttribute('aria-label', 'Filter table rows');
+	const { field, input: search } = searchField('Filter rows…', 'Filter table rows', () => { page = 0; render(); });
 	const scroll = document.createElement('div'); scroll.className = 'artifact-table-scroll';
 	const table = document.createElement('table'); const head = document.createElement('thead'); const row = document.createElement('tr'); const body = document.createElement('tbody');
 	const footer = document.createElement('div'); footer.className = 'artifact-table-footer';
-	const previous = document.createElement('button'); previous.type = 'button'; previous.textContent = 'Previous';
-	const next = document.createElement('button'); next.type = 'button'; next.textContent = 'Next';
-	const count = document.createElement('span'); count.setAttribute('role', 'status');
+	const pager = (label: string, icon: string, after: boolean) => {
+		const control = document.createElement('button'); control.type = 'button'; control.className = 'soft-button'; control.setAttribute('aria-label', `${label} page`);
+		const glyph = document.createElement('span'); glyph.className = `codicon codicon-${icon}`; glyph.setAttribute('aria-hidden', 'true');
+		const text = document.createElement('span'); text.textContent = label;
+		control.append(...(after ? [text, glyph] : [glyph, text]));
+		return control;
+	};
+	const previous = pager('Previous', 'chevron-left', false);
+	const next = pager('Next', 'chevron-right', true);
+	const count = document.createElement('span'); count.className = 'artifact-table-count'; count.setAttribute('role', 'status');
 	let page = 0, sort = -1, direction = 1;
 	const headers: HTMLTableCellElement[] = [];
 	const render = () => {
@@ -152,8 +160,7 @@ function tableView(data: TableData): HTMLElement {
 		button.addEventListener('click', () => { direction = sort === index ? -direction : 1; sort = index; render(); });
 		header.append(button); row.append(header);
 	});
-	search.addEventListener('input', () => { page = 0; render(); });
 	previous.addEventListener('click', () => { page--; render(); }); next.addEventListener('click', () => { page++; render(); });
-	head.append(row); table.append(head, body); scroll.append(table); footer.append(previous, count, next); root.append(search, scroll, footer); render();
+	head.append(row); table.append(head, body); scroll.append(table); footer.append(previous, count, next); root.append(field, scroll, footer); render();
 	return root;
 }

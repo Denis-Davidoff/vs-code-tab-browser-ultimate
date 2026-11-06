@@ -20,7 +20,7 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 
 - $(hubot) **007 agents** — Claude Code, Codex, Gemini CLI, OpenCode, Pi and OpenRouter in one chat; add OpenRouter models in Chat Settings.
 - $(terminal) **Terminal tabs** — open a shell or Claude Code, Codex, Gemini CLI, OpenCode or Pi in a chat tab; pin it to a conversation and its agent reads it and, with your approval, types.
-- $(extensions) **Chrome extension** — a full 1:1 mirror of your chat, right in Chrome alongside any website. Available on the [Chrome Web Store](https://chromewebstore.google.com/detail/ai-browser/jhdffimahnoijnnfnjadghjhkacheogn). All the latest changes are available only in DEV mode: [Download ZIP](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/refs/heads/main/chrome-extension/ai-browser-chrome-0.6.2.zip) and follow “How to install” to load it with Developer mode enabled.
+- $(extensions) **Chrome extension** — a full 1:1 mirror of your chat, right in Chrome alongside any website. Available on the [Chrome Web Store](https://chromewebstore.google.com/detail/ai-browser/jhdffimahnoijnnfnjadghjhkacheogn). All the latest changes are available only in DEV mode: [Download ZIP](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/refs/heads/main/chrome-extension/ai-browser-chrome-0.6.3.zip) and follow “How to install” to load it with Developer mode enabled.
 - $(coffee) **Keep awake** — use the cup at the top to prevent sleep for a set time or until all agents and sub-agents finish.
 - $(eye) **View Mode** — choose Minimal, Compact or Standard in the approval menu to control how much work, tool use and thinking is shown.
 - $(files) **Chats across tabs and windows** — open chats with the top +; right-click tabs to move them between the sidebar, tabs and windows with drafts and attachments intact. View chats side by side across screens.
@@ -28,6 +28,14 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(device-camera-video) **Record video** — record browser tabs from their toolbar, up to 4K, into the chat or clipboard.
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
+
+## 0.9.21 — 2026-11-06
+
+- **Pinned tabs** — click the chat tab already in front to pin it; a pinned tab moves next to the other pinned ones, gets a yellow underline, and asks before it closes. Pin or unpin from the tab's menu too.
+- **A new skill editor** — a live preview of the button, sections for parameters, next prompts, result and appearance, and a prompt that grows with its text. Every prompt has a Markdown toolbar (bold, italic, code, link, heading, lists, quote, code block, insert a parameter), the usual shortcuts and a Preview; a `{{name}}` with no parameter is listed with a one-click Add.
+- **Tidier result cards** — JSON and table cards get a proper search field and buttons, and JSON values are coloured by type, as in the debugger.
+- **Chrome extension 0.6.3** — the side panel carries this release's chat and design.
+- **Fixes** — ⌘B and ⌘K in the skill editor no longer also toggle the side bar or start a shortcut, inserting a parameter into a prompt in Preview no longer types into the parameter's name, and the tab list shows each tab's mark without a spinner.
 
 ## 0.9.20 — 2026-11-06
 
