@@ -26,6 +26,7 @@ function fixture(transport:'server'|'chrome', permissions?: ConnectionPermission
   _registry:{detecting:false,backend:()=>({})},_rememberInput:async()=>{},_send:async(text:string,tabId:string)=>{events.push({sent:text,tabId});},_blocked:()=>undefined,_post(){},_postMessage(){},_focusInput(){},_giveBackQueue(){},_rememberAgent(){},_selection(this:any){return {agent:this._active.chat.agent,model:'model'};},
   _state(this:any){return {chatId:this._active.chat.id,switchTo:this._switchTo};},
   async _receive(this:any,message:any){if(message.type==='select')this._select(message.selection);else if(message.type==='newTab'||message.type==='newChat')await this.newChat(message.location);else await this._switchAgent(message.choice);},
+  _tabProjectId(tab:any){return tab.chat.folder;},
   _selectTab(this:any,id:string){this._active=this._tabs.find((tab:any)=>tab.id===id);},
   _addTab(this:any,agent:string){const tab=makeTab(`new-${++serial}`,agent,false);this._tabs.push(tab);this._active=tab;return tab;},
  });

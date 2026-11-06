@@ -510,6 +510,14 @@ button {
 	text-overflow: ellipsis;
 }
 
+.turn-summary-now.opens {
+	cursor: pointer;
+}
+
+.turn-summary-now.opens:hover > span {
+	text-decoration: underline;
+}
+
 .turn-summary-now .verb {
 	margin-right: 4px;
 	color: var(--fg-2);
@@ -1726,8 +1734,18 @@ button {
 }
 .input-wrap > .attachments .chip { flex: none; height: 22px; }
 .input-wrap > .attachments .chip-label { max-width: 160px; }
-.input-wrap:has(> .attachments:not([hidden])) > .input,
-.input-wrap:has(> .attachments:not([hidden])) > .input-mirror { padding-bottom: 30px; }
+/* The row's 32 px is taken off the box, not added as padding inside it: padding
+   belongs to the scroll area, so a long draft scrolled under the pins. A margin
+   keeps the text above them (the row is 28 px from the bottom, the box's own 4 px
+   bottom padding plus this leaves 8 px between the last line and a chip); the box
+   plus its margin is still 68 px at least. With no pins (the row hidden) the text
+   has the whole height. */
+.input-wrap:has(> .attachments:not([hidden])) > .input {
+	margin-bottom: 32px;
+	min-height: 36px;
+	max-height: 168px;
+}
+.input-wrap:has(> .attachments:not([hidden])) > .input-mirror { bottom: 32px; }
 
 .input-area {
 	display: grid;
@@ -2961,6 +2979,44 @@ button {
 	white-space: nowrap;
 }
 
+/* The chat's icon in a tab: a fixed slot, coloured by status. */
+.tab-kind {
+	flex: none;
+	width: 14px;
+	height: 1em;
+	align-self: center;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--fg-3);
+	font-size: 13px;
+	line-height: 1;
+}
+
+.tab-kind.status-working { color: var(--ok); animation: tab-kind-pulse 1.4s ease-in-out infinite; }
+.tab-kind.status-waiting { color: var(--warn); animation: blink 1s linear infinite; }
+.tab-kind.status-unread { color: var(--vscode-charts-blue, var(--accent)); }
+.tab-kind.status-failed { color: var(--vscode-charts-orange, #d18616); }
+
+/* Bright with a glow, then a dimmer shade of the status colour with less glow; never gone, so the ring reads over the active tile's tinted background. */
+@keyframes tile-status-pulse {
+	0%, 100% {
+		border-color: var(--tile-status);
+		box-shadow: 0 0 4px 0 var(--tile-status), inset 0 0 2px var(--tile-status);
+	}
+	50% {
+		border-color: color-mix(in srgb, var(--tile-status) 55%, #000);
+		box-shadow: 0 0 1px 0 color-mix(in srgb, var(--tile-status) 40%, transparent);
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.tab-compact.labelled::after { animation: none !important; }
+}
+@keyframes tab-kind-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.45; }
+}
+
 /* A fixed box, so the title does not move as the mark changes. */
 .tab-mark {
 	flex: none;
@@ -3054,6 +3110,8 @@ button {
 .tab-row.stretched .tab:not(.overflowed) { max-width: none; }
 .tab-overflow-button {
 	flex: none;
+	/* Always at the right end of the strip, after "+" and the terminal button. */
+	margin-left: auto;
 	display: inline-flex;
 	align-items: center;
 	gap: 2px;
@@ -3065,10 +3123,29 @@ button {
 .tab-overflow-button[hidden] { display: none; }
 .tab-overflow-button:hover,
 .tab-overflow-button.active { color: var(--fg); }
-.popup.tab-overflow { min-width: 200px; max-width: 320px; overflow-y: auto; }
+/* The shared .menu class fixes a 260px width; the tab list is wider so whole names fit (asked for). */
+.popup.menu.tab-overflow { width: min(440px, calc(100% - 16px)); min-width: 260px; max-width: calc(100% - 16px); overflow-y: auto; }
 .tab-overflow-item { position: relative; display: flex; align-items: center; }
+.tab-overflow-item.drop-before::before,
+.tab-overflow-item.drop-after::after {
+	content: ''; position: absolute; left: 8px; right: 8px; height: 2px; border-radius: 1px;
+	background: var(--vscode-focusBorder, var(--fg)); pointer-events: none;
+}
+.tab-overflow-item.drop-before::before { top: -1px; }
+.tab-overflow-item.drop-after::after { bottom: -1px; }
+.tab-overflow-item.dragging { opacity: 0.5; }
+.popup.menu.tab-overflow.drag-away { opacity: 0.35; pointer-events: none; }
 .tab-overflow-item .tab-overflow-row { flex: 1; min-width: 0; padding-right: 56px; }
-.tab-overflow-row .menu-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The list exists to show whole names: they wrap instead of being cut. */
+.tab-overflow-row .menu-label { white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
+.tab-overflow-row { align-items: flex-start; }
+.tab-overflow-row > .codicon, .tab-overflow-row > .tab-mark, .tab-overflow-row > .liquid-loader { margin-top: 2px; }
+.tab-overflow-row.current { background: color-mix(in srgb, var(--vscode-focusBorder, var(--fg)) 14%, transparent); }
+.tab-overflow-row.current .menu-label { font-weight: 600; }
+/* Shown in the strip: a light tint. Only in the list: dimmed and italic. No extra markup (asked for). */
+/* Shown in the strip: a faint grey tint, quieter than the accent. Only in the list: dimmed, upright. */
+.tab-overflow-row.shown-tab { background: color-mix(in srgb, var(--fg) 7%, transparent); }
+.tab-overflow-row.hidden-tab .menu-label { color: var(--fg-3); }
 .tab-overflow-row .tab-agents { flex: none; margin-left: 6px; }
 .tab-overflow-mark { display: inline-flex; align-items: center; justify-content: center; }
 .tab-overflow-more,
@@ -3815,6 +3892,7 @@ button {
 		transition: none;
 	}
 
+	.tab-kind,
 	.tab-mark.working::before,
 	.tab-mark.working::after,
 	.tab-mark.waiting::before,
@@ -5262,7 +5340,8 @@ button {
 
 @media (min-width: 1000px) {
 	#app {
-		--chat-content-width: 696px;
+		/* Asked for: the conversation uses most of the window, 85% of the room beside the sidebar, never narrower than 696px. */
+		--chat-content-width: min(100%, max(696px, 85%));
 		--chat-drawer-width: 252px;
 		flex-direction: row;
 	}
@@ -5293,17 +5372,13 @@ button {
 	.chat-drawer-header {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
+		/* The toggle stands where a title would, at the conversation's side of the drawer. */
+		justify-content: flex-end;
 		flex: none;
 		gap: 8px;
 		min-height: 44px;
 		padding: 12px 10px 8px;
 		box-sizing: border-box;
-	}
-
-	.chat-drawer-title {
-		font-weight: 600;
-		color: var(--fg-2);
 	}
 
 	.chat-drawer-footer {
@@ -5398,13 +5473,12 @@ button {
 	.receiving-chat-tab.chat-drawer-right .tab-strip { box-shadow: inset 2px 0 var(--accent); }
 
 	#app.chat-drawer-collapsed { --chat-drawer-width: 52px; }
-	.chat-drawer-right .chat-drawer-header { flex-direction: row-reverse; }
+	.chat-drawer-right .chat-drawer-header { justify-content: flex-start; }
 	.chat-drawer-footer { justify-content: flex-end; padding-inline: 10px; }
 	.chat-drawer-right .chat-drawer-footer { justify-content: flex-start; }
 	.chat-drawer-collapsed .chat-drawer-footer { padding-inline: 8px; }
 	.chat-drawer-footer .ghost { width: 30px; padding: 0; }
-	.chat-drawer-collapsed .chat-drawer-header { padding: 8px; }
-	.chat-drawer-collapsed .chat-drawer-title,
+	.chat-drawer-collapsed .chat-drawer-header { padding: 8px; justify-content: center; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -5491,6 +5565,7 @@ button {
 		padding: 0;
 	}
 	.chat-drawer-collapsed .tab-label > .tab-mark,
+	.chat-drawer-collapsed .tab-label > .tab-kind,
 	.chat-drawer-collapsed .tab-text,
 	.chat-drawer-collapsed .tab-title,
 	.chat-drawer-collapsed .tab-model,
@@ -5514,6 +5589,24 @@ button {
 		font-variant-numeric: tabular-nums;
 	}
 	.chat-drawer-collapsed .tab-compact .working { transform: none; }
+	.chat-drawer-collapsed .tab-compact-label { font-size: 16px; line-height: 1; }
+	/* A labelled tile shows its status on its border: a ring over the tab's own border, pulsing while there is work. */
+	.chat-drawer-collapsed .tab-compact.labelled::after {
+		content: '';
+		position: absolute;
+		inset: -1px;
+		border: 2px solid var(--tile-status, transparent);
+		border-radius: 8px;
+		z-index: 1;
+		pointer-events: none;
+	}
+	.chat-drawer-collapsed .tab-compact.labelled.status-working { --tile-status: var(--vscode-charts-green, #3fb950); }
+	.chat-drawer-collapsed .tab-compact.labelled.status-waiting { --tile-status: var(--warn); }
+	.chat-drawer-collapsed .tab-compact.labelled.status-unread { --tile-status: var(--vscode-charts-blue, var(--accent)); }
+	.chat-drawer-collapsed .tab-compact.labelled.status-failed { --tile-status: var(--vscode-charts-orange, #d18616); }
+	.chat-drawer-collapsed .tab-compact.labelled.status-working::after { animation: tile-status-pulse 1.8s ease-in-out infinite; }
+	.chat-drawer-collapsed .tab-compact.labelled.status-waiting::after { animation: tile-status-pulse 1.1s ease-in-out infinite; }
+	.tab.loading .tab-compact.labelled::after { animation: none; opacity: 0; }
 	.chat-drawer-collapsed .tab-compact.status-unread { color: var(--ok); }
 	.chat-drawer-collapsed .tab-compact.status-failed { color: var(--warn); }
 	.chat-drawer-collapsed .tab-agents {
@@ -6821,8 +6914,10 @@ body.vv-locked {
 .tab .tab-loading { display: none; }
 .tab.loading .tab-loading { display: inline-block; font-size: 12px; flex: none; }
 .tab.loading .tab-mark,
+.tab.loading .tab-kind,
 .tab.loading .tab-compact .codicon:not(.tab-loading),
-.tab.loading .tab-compact .tab-mark { display: none; }
+.tab.loading .tab-compact .tab-mark,
+.tab.loading .tab-compact .tab-compact-label { display: none; }
 
 /* The GitHub composer tab: run and pull request state colours. */
 .composer-github .gh-run.success, .composer-github .gh-pr { color: var(--vscode-charts-green); }
@@ -7205,3 +7300,219 @@ body.vv-locked {
 
 /* A menu opened at the pointer hangs from this point (`openComposerTabsMenu`). */
 .pointer-anchor { position: fixed; width: 0; height: 0; pointer-events: none; }
+
+/* ---------------------------------------------------------------- projects
+ * The thin project bar above the narrow strip, the project headings of the wide
+ * drawer and of the tab list. See `tabProjects.ts` and "projects" in chat.ts. */
+
+.project-bar {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	padding: 4px 6px 1px;
+	overflow-x: auto;
+	scrollbar-width: none;
+}
+.project-bar::-webkit-scrollbar { display: none; }
+.project-bar[hidden] { display: none; }
+
+/* Chips keep their whole name while the bar has room, and only then give way, the longest names
+   first (flex-shrink is weighed by width), down to a few letters; past that the bar scrolls. */
+.project-chip {
+	flex: 0 1 auto;
+	min-width: auto;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	height: 20px;
+	padding: 0 6px 0 5px;
+	border: 1px solid transparent;
+	border-radius: 10px;
+	font-size: 11px;
+	line-height: 1;
+	color: var(--fg-3);
+	white-space: nowrap;
+	cursor: pointer;
+	transition: background .15s ease, color .15s ease, border-color .15s ease, box-shadow .2s ease;
+}
+.project-chip .project-icon { font-size: 12px; opacity: .8; }
+.project-chip > * { flex: none; }
+/* A grid track of minmax(4ch, max-content) makes the name's min-content four letters and its
+   max-content the whole name, so the chip's automatic minimum lets it shrink only that far. */
+.project-chip .project-name { flex: 0 1 auto; display: inline-grid; grid-template-columns: minmax(4ch, max-content); min-width: 0; }
+.project-chip .project-name > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.project-chip.active { flex-shrink: 0; }
+.project-chip:hover { background: var(--soft); color: var(--fg-2); }
+.project-chip:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.project-chip.active {
+	color: var(--fg);
+	background: color-mix(in srgb, var(--accent) 16%, transparent);
+	border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.project-chip.active .project-icon { opacity: 1; color: var(--accent); }
+/* A project out of view with a result waiting to be read, or a question: it calls for a look. */
+.project-chip.calls {
+	color: var(--fg);
+	border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+	box-shadow: 0 0 6px color-mix(in srgb, var(--ok) 28%, transparent);
+	animation: project-calls 2.4s ease-in-out infinite;
+}
+.project-chip.calls:has(.project-mark.waiting) {
+	border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+	box-shadow: 0 0 6px color-mix(in srgb, var(--warn) 30%, transparent);
+}
+@keyframes project-calls {
+	0%, 100% { box-shadow: 0 0 2px color-mix(in srgb, var(--ok) 18%, transparent); }
+	50% { box-shadow: 0 0 8px color-mix(in srgb, var(--ok) 40%, transparent); }
+}
+
+.project-count {
+	flex: none;
+	min-width: 8px;
+	padding: 2px 4px;
+	border-radius: 7px;
+	background: var(--soft-2);
+	color: var(--fg-2);
+	font-size: 10px;
+	font-variant-numeric: tabular-nums;
+	text-align: center;
+}
+.project-chip.active .project-count { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--fg); }
+
+.project-num {
+	flex: none;
+	font-size: 10px;
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+	letter-spacing: 0;
+	text-transform: none;
+}
+.project-num.thinking { color: var(--vscode-charts-blue, #3794ff); }
+.project-num.unread { color: var(--ok); }
+
+.project-mark {
+	flex: none;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+}
+.project-mark.failed { background: var(--vscode-charts-orange, #d18616); }
+.project-mark.waiting { background: var(--warn); animation: tab-kind-pulse 1.1s ease-in-out infinite; }
+
+/* Narrow strip: tabs of another project are out of the row; the headings belong to the drawer. */
+.tab.project-hidden { display: none !important; }
+.tab-row > .project-head { display: none; }
+
+/* The tab list: a heading over each project. */
+.tab-overflow-project {
+	display: flex;
+	text-align: start;
+	align-items: center;
+	gap: 6px;
+	margin: 6px 4px 2px;
+	padding: 4px 6px 3px;
+	border-top: 1px solid var(--border);
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: .02em;
+	color: var(--fg-2);
+}
+.tab-overflow > .menu-heading + .tab-overflow-project { border-top: 0; margin-top: 2px; }
+.tab-overflow-project .project-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-overflow-project.current { color: var(--fg); }
+.tab-overflow-project.current .project-icon { color: var(--accent); }
+.tab-overflow-row.other-project .menu-label { color: var(--fg-2); }
+
+/* Each project's folder colour (`projectColors` in tabProjects.ts picks the slot, distinct
+   between open projects). Twelve hues picked to read apart; lighter on dark themes,
+   darker on light ones. Only the folder icon takes it. */
+.project-icon.project-color { --pc-s: 72%; --pc-l: 66%; color: hsl(var(--pc-h) var(--pc-s) var(--pc-l)) !important; opacity: 1 !important; }
+body.vscode-light .project-icon.project-color { --pc-s: 68%; --pc-l: 40%; }
+.project-icon.pc-0 { --pc-h: 4; }
+.project-icon.pc-1 { --pc-h: 28; }
+.project-icon.pc-2 { --pc-h: 48; }
+.project-icon.pc-3 { --pc-h: 84; }
+.project-icon.pc-4 { --pc-h: 135; }
+.project-icon.pc-5 { --pc-h: 168; }
+.project-icon.pc-6 { --pc-h: 190; }
+.project-icon.pc-7 { --pc-h: 212; }
+.project-icon.pc-8 { --pc-h: 236; }
+.project-icon.pc-9 { --pc-h: 262; }
+.project-icon.pc-10 { --pc-h: 290; }
+.project-icon.pc-11 { --pc-h: 324; }
+body.vscode-light .project-icon.pc-2 { --pc-l: 34%; }
+body.vscode-light .project-icon.pc-3 { --pc-l: 34%; }
+
+@media (min-width: 1000px) {
+	.tab.group-folded { display: none !important; }
+	.tab-row > .project-head {
+		display: flex;
+		text-align: start;
+		position: sticky;
+		top: -4px;
+		z-index: 1;
+		align-items: center;
+		gap: 5px;
+		min-height: 22px;
+		margin: 10px 0 2px -4px;
+		padding: 3px 6px 3px 2px;
+		border-radius: 5px;
+		background: color-mix(in srgb, var(--fg) 2%, var(--bg));
+		color: var(--fg-3);
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: .06em;
+		text-transform: uppercase;
+		cursor: pointer;
+	}
+	.tab-row > .project-head.first { margin-top: 0; }
+	.tab-row > .project-head:hover { color: var(--fg); background: color-mix(in srgb, var(--fg) 6%, var(--bg)); }
+	.project-head .project-fold { font-size: 11px; opacity: .6; }
+	.project-head .project-icon { font-size: 12px; opacity: .7; }
+	/* The tabs of a project sit under its heading: indented, with a faint guide line on their left. */
+	.tab-row.grouped > .tab { position: relative; margin-left: 14px; }
+	.tab-row.grouped > .tab:not(.chrome-mirrored)::after {
+		content: '';
+		position: absolute;
+		left: -8px;
+		top: -2px;
+		bottom: -2px;
+		width: 1px;
+		background: var(--border-strong);
+		pointer-events: none;
+	}
+	.tab-row.grouped > .tab.active:not(.chrome-mirrored)::after { background: color-mix(in srgb, var(--accent) 70%, transparent); }
+	.chat-drawer-collapsed .tab-row.grouped > .tab { margin-left: 0; }
+	.chat-drawer-collapsed .tab-row.grouped > .tab:not(.chrome-mirrored)::after { content: none; }
+	.project-head .project-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.project-head.calls .project-name { color: var(--fg); }
+	.project-head.folded.calls { box-shadow: inset 2px 0 var(--ok); }
+	.project-head .project-count { text-transform: none; letter-spacing: 0; font-weight: 500; }
+
+	/* The collapsed rail: a heading is a thin divider with its folder, marked when something calls. */
+	.chat-drawer-collapsed .tab-row > .project-head {
+		position: relative;
+		justify-content: center;
+		min-height: 18px;
+		margin-top: 4px;
+		padding: 2px 0;
+		border-top: 1px solid var(--border);
+		border-radius: 0;
+		background: none;
+	}
+	.chat-drawer-collapsed .project-head > :not(.project-icon) { display: none; }
+	.chat-drawer-collapsed .project-head.calls::after {
+		content: '';
+		position: absolute;
+		top: 3px;
+		right: 8px;
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--ok);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.project-chip.calls, .project-mark.waiting { animation: none; }
+}

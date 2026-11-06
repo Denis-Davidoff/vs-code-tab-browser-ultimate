@@ -7,6 +7,9 @@ import { ScriptTarget, transpileModule } from 'typescript';
 test('Bash badge waits five seconds, wakes without output, and cancels on completion or chat switch', () => {
 	const source = readFileSync('preview-src/chat.ts', 'utf8');
 	const render = /function renderComposerBash\([\s\S]*?\n\}/.exec(source)![0];
+	const resetLimits = /function resetComposerListLimits\([\s\S]*?\n\}/.exec(source)![0];
+	const durationFn = /function duration\([\s\S]*?\n\}/.exec(source)![0];
+	const elapsedFn = /function elapsedSpan\([\s\S]*?\n\}/.exec(source)![0];
 	const sync = /let processWatchSent[\s\S]*?\nfunction syncProcessWatch\([\s\S]*?\n\}/.exec(source)![0];
 	const posted: unknown[] = [];
 	let now = 10_000;
@@ -18,11 +21,18 @@ test('Bash badge waits five seconds, wakes without output, and cancels on comple
 		const bashBadgeDelayMs = 5_000;
 		let bashBadgeTimer;
 		let pendingBashReveal;
+		const composerListStep = 100;
+		let composerListChat = '';
+		let composerHistoryShown = composerListStep;
+		let composerBashShown = composerListStep;
+		${resetLimits}
+		${durationFn}
+		${elapsedFn}
 		${sync}
 		${render}
 		renderComposerBash;
 	`, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText, {
-		state, bashRunningBadge: badge, composerTab: 'chat', Date: { now: () => now },
+		state, bashRunningBadge: badge, el: (tag: string, props: any = {}) => ({ tagName: tag, dataset: {}, ...props, textContent: props.text ?? '' }), composerBashList: { querySelectorAll: () => [] }, composerTab: 'chat', Date: { now: () => now },
 		document: { hidden: false }, vscode: { postMessage: (message: unknown) => posted.push(message) },
 		setTimeout(run: () => void, delay: number) { const id = ++nextId; timers.set(id, { at: now + delay, run }); return id; },
 		clearTimeout(id: number) { timers.delete(id); },

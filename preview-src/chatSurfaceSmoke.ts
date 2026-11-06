@@ -90,6 +90,26 @@ async function run() {
 			check(items.length === 3 && !items[1].disabled && !items[2].disabled, `${surface}/${width}: Send/Queue actions missing while working`);
 			items[2].click();
 			check(commands.some(m => m.type === 'send' && m.text === 'Follow up' && m.mode === 'queue'), `${surface}/${width}: queued send not delivered`);
+				// The tab list: always at the right end of the narrow strip, every tab by its whole name.
+				const longTitle = 'A conversation whose title is far too long for the strip to show whole';
+				await show({ ...state, tabs: [...state.tabs, { id: 'two', chatId: 'second', title: longTitle, running: false, busy: false, agents: 0, skillRuns: 0, queued: 0 }] });
+				const listButton = doc.querySelector<HTMLButtonElement>('.tab-overflow-button');
+				if (width < 1000) {
+					check(listButton && !listButton.hidden, `${surface}/${width}: tab list button missing`);
+					const strip = doc.querySelector<HTMLElement>('.tab-row')!.getBoundingClientRect();
+					check(strip.right - listButton!.getBoundingClientRect().right < 16, `${surface}/${width}: tab list button not at the right end`);
+					listButton!.click(); await wait();
+					const rows = [...doc.querySelectorAll<HTMLElement>('.tab-overflow.open .tab-overflow-row')];
+					check(rows.length === 2 && rows[0].classList.contains('current') && rows[1].textContent?.includes(longTitle), `${surface}/${width}: tab list does not show every tab`);
+					check(doc.querySelector<HTMLElement>('.tab-overflow')!.getBoundingClientRect().width >= Math.min(300, width - 24), `${surface}/${width}: tab list too narrow`);
+					check(/^All tabs.*shown/.test(doc.querySelector('.tab-overflow .menu-heading')?.textContent ?? '') && rows.every(r => r.classList.contains('shown-tab') || r.classList.contains('hidden-tab')), `${surface}/${width}: tab list does not say which tabs are shown`);
+					const label = rows[1].querySelector<HTMLElement>('.menu-label')!;
+					check(label.scrollWidth <= label.clientWidth + 1, `${surface}/${width}: tab list cuts a title`);
+					doc.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await wait();
+				} else {
+					check(!listButton || listButton.hidden, `${surface}/${width}: tab list button shown beside the wide drawer`);
+				}
+				await show();
 		}
 		const shell = (id: string, status: 'running' | 'done' | 'failed', startedAt: number) => ({
 			kind: 'tool' as const, id, tool: 'command' as const, name: 'Bash', input: `echo ${id}`, output: `Output ${id}`, status, startedAt,

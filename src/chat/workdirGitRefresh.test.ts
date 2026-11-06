@@ -127,7 +127,7 @@ test('failed fetch still returns local Git status and cached branch counts', asy
  await read.call({
   _blocked: () => false, _view: undefined,
   _fetchWorkdirGit: async () => { throw new Error('Offline'); },
-  _runWorkdirGit: async () => '', _pullRequestFor: () => ({}), _branchStashes: new Map(),
+  _runWorkdirGit: async () => '', _pullRequestFor: () => ({}), _branchStashes: new Map(), _lastWorkdirGit: new Map(),
   _postMessage: (message: any) => posted.push(message),
  }, '/repo', 'auto');
  assert.equal(posted.length, 1);

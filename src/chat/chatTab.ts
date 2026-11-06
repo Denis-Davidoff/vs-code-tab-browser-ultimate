@@ -42,6 +42,22 @@ const storedToolLimit = 4_000;
 const richBlockLimit = 200_000;
 /** How long a tab must stay quiet before Claude Code is restarted under it; past Claude Code's own following turn. */
 const restartQuietMs = 2_500;
+/**
+ * A conversation nothing happened in for this long lets its CLI go: an open
+ * Claude Code tab is a `claude` process of ~200 MB whether or not anybody
+ * writes in it. The next message opens a session again and resumes by `ref`.
+ */
+export const idleReleaseMs = 60 * 60_000;
+/** How long Claude Code keeps a session cron (recurring jobs expire after 7 days). */
+const cronKeptMs = 7 * 24 * 60 * 60_000;
+
+function parseInput(text: string | undefined): Record<string, unknown> | undefined {
+	if (!text) { return undefined; }
+	try {
+		const value: unknown = JSON.parse(text);
+		return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+	} catch { return undefined; }
+}
 
 export interface StoredChat {
 	/** An emoji the user put on the tab; it leads the title, so wherever the title shows it does. */
@@ -557,6 +573,10 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 	 */
 	private _restartForDirs = false;
 	private _restartTimer: ReturnType<typeof setTimeout> | undefined;
+	/** The last message sent or event from the agent; `idleReleaseMs` counts from it. */
+	private _activityAt = Date.now();
+	/** When the current session opened: timers set before it went with an earlier process. */
+	private _sessionOpenedAt = 0;
 	/** `failures` when the last message was sent, so only what went wrong after it counts. */
 	private _failuresBefore = 0;
 
@@ -1244,6 +1264,7 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 		pending.resend = { input: { text: prompt, images, ...(agent === 'claude' ? { ultracode } : {}) }, model, effort };
 
 		const chat = this._chat;
+		this._activityAt = Math.max(this._activityAt, Date.now());
 		const session = this._ensureSession(backend);
 		chat.stats.turns++;
 		let delivered = true;
@@ -1329,6 +1350,74 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 			this._scheduleRestart();
 		}
 		this._host.changed();
+	}
+
+	/**
+	 * Lets the session go once nothing has happened for `idleReleaseMs` — called
+	 * by the provider's sweep. The hour counts from the end of all activity: a
+	 * sweep that finds anything still at work restarts it. That is a turn, a
+	 * retry, a prompt waiting to be taken in, a queue, an open question, a tool
+	 * row still running (a background agent or shell lives inside the CLI and
+	 * would end with it), and what the provider knows of (`background`: a toolbar
+	 * skill run, a chat this one created still working). OpenRouter holds no
+	 * process and its history is rebuilt without tool results, so it is left alone.
+	 */
+	public releaseIfIdle(now = Date.now(), background = false): boolean {
+		if (!this._session || this._chat.agent === 'openrouter') {
+			return false;
+		}
+		if (background || !this._idleNow()) {
+			this._activityAt = Math.max(this._activityAt, now);
+			return false;
+		}
+		// A timer the agent set holds the tab as working until it fires.
+		this._activityAt = Math.max(this._activityAt, Math.min(this._scheduledUntil(now), now));
+		if (now - this._activityAt < idleReleaseMs) {
+			return false;
+		}
+		this._dropSession();
+		this._host.changed();
+		return true;
+	}
+
+	/**
+	 * When the agent has scheduled itself to wake up inside its own process
+	 * (Claude Code's `ScheduleWakeup`, `CronCreate`). Its tool call ended at
+	 * once, so no row is running, yet ending the process loses the timer. A
+	 * wake-up counts as activity at the time it fires; a cron not deleted
+	 * (`CronDelete`) holds the process, for at most the 7 days Claude Code keeps
+	 * a session cron. Only timers set since this session opened count: one from
+	 * an earlier process (a window reload, a release) went with that process.
+	 */
+	private _scheduledUntil(now: number): number {
+		let until = 0;
+		let wake: number | undefined;
+		const crons: { at: number; output: string }[] = [];
+		for (const e of this._chat.entries) {
+			if (e.kind !== 'tool' || e.status === 'failed' || e.status === 'stopped') { continue; }
+			if (e.startedAt < this._sessionOpenedAt) { continue; }
+			const input = parseInput(e.input);
+			const at = e.endedAt ?? e.startedAt;
+			if (e.name === 'ScheduleWakeup') {
+				const delay = typeof input?.delaySeconds === 'number' ? input.delaySeconds : undefined;
+				wake = input?.stop === true || delay === undefined ? undefined : at + Math.min(delay, 3600) * 1000 + 60_000;
+			} else if (e.name === 'CronCreate') {
+				crons.push({ at, output: e.output ?? '' });
+			} else if (e.name === 'CronDelete') {
+				// The job id is in the create's answer; failing a match, the oldest goes.
+				const id = typeof input?.id === 'string' && input.id ? input.id : undefined;
+				const index = id ? crons.findIndex(c => c.output.includes(id)) : -1;
+				crons.splice(index >= 0 ? index : 0, 1);
+			}
+		}
+		if (wake !== undefined) { until = Math.max(until, wake); }
+		if (crons.some(c => now - c.at < cronKeptMs)) { until = Math.max(until, now); }
+		return until;
+	}
+
+	private _idleNow(): boolean {
+		return !this.busy && !this._waiting.length && !this.waiting && !this._queued.length && !this._restartTimer
+			&& !this._chat.entries.some(e => e.kind === 'tool' && e.status === 'running');
 	}
 
 	private _save(chat = this._chat): Promise<void> {
@@ -1487,6 +1576,7 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 		this._tokenOffset = { input: 0, output: 0, cached: 0 };
 		const chatId = this._chat.id;
 		this._session = session;
+		this._sessionOpenedAt = Date.now();
 		this._sessionEvents = session.onEvent(event => {
 			if (this._session === session && this._chat.id === chatId) {
 				this._onAgentEvent(event);
@@ -1496,6 +1586,7 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 	}
 
 	private _onAgentEvent(event: AgentEvent): void {
+		this._activityAt = Math.max(this._activityAt, Date.now());
 		const chat = this._chat;
 		if (this._waiting.length && chat.agent === 'claude') {
 			// A tool's result is the boundary where Claude Code takes a waiting
@@ -1577,6 +1668,10 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 						}
 					}
 				}
+				break;
+			case 'processStarted':
+				// `ScheduleWakeup` and `CronCreate` live inside the process; a new one has none of them.
+				this._sessionOpenedAt = Date.now();
 				break;
 			case 'autoTurn': {
 				// The CLI is answering on its own: a message sent during the turn

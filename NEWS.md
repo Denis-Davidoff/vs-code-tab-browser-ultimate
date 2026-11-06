@@ -20,7 +20,7 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 
 - $(hubot) **007 agents** — Claude Code, Codex, Gemini CLI, OpenCode, Pi and OpenRouter in one chat; add OpenRouter models in Chat Settings.
 - $(terminal) **Terminal tabs** — open a shell or Claude Code, Codex, Gemini CLI, OpenCode or Pi in a chat tab; pin it to a conversation and its agent reads it and, with your approval, types.
-- $(extensions) **Chrome extension** — a full 1:1 mirror of your chat, right in Chrome alongside any website. Available on the [Chrome Web Store](https://chromewebstore.google.com/detail/ai-browser/jhdffimahnoijnnfnjadghjhkacheogn). All the latest changes are available only in DEV mode: [Download ZIP](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/refs/heads/main/chrome-extension/ai-browser-chrome-0.6.1.zip) and follow “How to install” to load it with Developer mode enabled.
+- $(extensions) **Chrome extension** — a full 1:1 mirror of your chat, right in Chrome alongside any website. Available on the [Chrome Web Store](https://chromewebstore.google.com/detail/ai-browser/jhdffimahnoijnnfnjadghjhkacheogn). All the latest changes are available only in DEV mode: [Download ZIP](https://github.com/Denis-Davidoff/vs-code-tab-browser-ultimate/raw/refs/heads/main/chrome-extension/ai-browser-chrome-0.6.2.zip) and follow “How to install” to load it with Developer mode enabled.
 - $(coffee) **Keep awake** — use the cup at the top to prevent sleep for a set time or until all agents and sub-agents finish.
 - $(eye) **View Mode** — choose Minimal, Compact or Standard in the approval menu to control how much work, tool use and thinking is shown.
 - $(files) **Chats across tabs and windows** — open chats with the top +; right-click tabs to move them between the sidebar, tabs and windows with drafts and attachments intact. View chats side by side across screens.
@@ -28,6 +28,15 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(device-camera-video) **Record video** — record browser tabs from their toolbar, up to 4K, into the chat or clipboard.
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
+
+## 0.9.20 — 2026-11-06
+
+- **Tabs by project** — a thin bar above the tabs shows All and each project with its tab count, how many tabs are thinking (blue) and how many have unread results (green); pick one to see only its tabs. The wide sidebar and the tab list group tabs under folding project headings, and Tab moves through headings and tabs in the order they are drawn.
+- **Coloured project folders** — each open project's folder icon gets a colour of its own, never shared with another open project, and keeps it while others open and close.
+- **An empty chat per project** — New Chat reuses an empty tab only in the same project, so every project can have its own.
+- **A simpler folder button** — the folder button beside **/** now only sets the working folder and opens GitHub repositories; attach files with **+** or the Files tab.
+- **Chrome and the website** — the Chrome side panel (0.6.2) and the Exchange website are rebuilt with this release's chat and design.
+- **Fixes** — the Chrome mark shows again on grouped tabs in the collapsed sidebar, dropping a terminal on the tab list no longer moves it to the end, and a Claude Code timer from before a model, effort or Ultracode change no longer keeps an idle tab's CLI running.
 
 ## 0.9.19 — 2026-11-05
 

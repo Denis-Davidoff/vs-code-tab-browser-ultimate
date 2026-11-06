@@ -54,12 +54,13 @@ test('compact tab metadata retains identity and reports status and capped agent 
 	const { transpileModule } = await import('typescript');
 	const source = readFileSync('preview-src/chat.ts', 'utf8');
 	const body = /function fillTab\([\s\S]*?\n\}/.exec(source)![0];
+	const kindMark = /function tabKindMark\([\s\S]*?\n\}/.exec(source)![0];
 	const element = (_tag: string, props: { class?: string; text?: string; [key: string]: unknown } = {}, ...children: unknown[]) => ({
 		...props, children, attributes: {} as Record<string, string>,
 		setAttribute(name: string, value: string) { this.attributes[name] = value; },
 		removeAttribute(name: string) { delete this.attributes[name]; },
 	});
-	const fill = runInNewContext(transpileModule(body + '\nfillTab;', {}).outputText, {
+	const fill = runInNewContext(transpileModule(body + '\n' + kindMark + '\nfillTab;', {}).outputText, {
 		el: element, icon: (name: string) => element('i', { icon: name }),
 		tabMark: (status: string) => element('span', { status }),
 		tabMarks: { working: 'Working', waiting: 'Waiting', read: 'Finished', unread: 'Unread', failed: 'Failed' },
@@ -85,12 +86,13 @@ test('a conversation tab with pinned terminals shows their count and says which 
 	const { transpileModule } = await import('typescript');
 	const source = readFileSync('preview-src/chat.ts', 'utf8');
 	const body = /function fillTab\([\s\S]*?\n\}/.exec(source)![0];
+	const kindMark = /function tabKindMark\([\s\S]*?\n\}/.exec(source)![0];
 	const element = (_tag: string, props: { class?: string; text?: string; title?: string } = {}, ...children: unknown[]) => ({
 		...props, children, attributes: {} as Record<string, string>,
 		setAttribute(name: string, value: string) { this.attributes[name] = value; },
 		removeAttribute(name: string) { delete this.attributes[name]; },
 	});
-	const fill = runInNewContext(transpileModule(body + '\nfillTab;', {}).outputText, {
+	const fill = runInNewContext(transpileModule(body + '\n' + kindMark + '\nfillTab;', {}).outputText, {
 		el: element, icon: (name: string) => element('i', { class: name }),
 		tabMark: () => undefined, tabMarks: {}, conversationBadge, isMacView: true,
 		agentsOf: (t: { agents: number; skillRuns: number }) => t.agents + t.skillRuns,

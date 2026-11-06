@@ -9,6 +9,15 @@ interface Owner { chatId: string; source: string }
 interface Root { pid: number; createdAt: number; birth?: string; owner?: Owner }
 interface Tracked { row: ProcessRow; owner: Owner; seenAt: number; detached: boolean; attribution: 'environment' | 'ancestry' }
 const identity = (row: Pick<ProcessRow, 'pid' | 'birth'>) => `${row.pid}:${row.birth}`;
+/**
+ * When the process really started: its birth (`ps lstart`, or the creation time on Windows), not
+ * when the monitor first saw it, which lags by the 5 s listing delay and the sampling pace. A birth
+ * that cannot be read, or lies after the first sighting (a skewed parse), falls back to the sighting.
+ */
+const startedAt = (item: Pick<Tracked, 'row' | 'seenAt'>): number => {
+	const born = Date.parse(item.row.birth);
+	return Number.isFinite(born) && born > 0 && born <= item.seenAt ? born : item.seenAt;
+};
 
 /** Executable names only: argv and environments may contain credentials. */
 export function parseProcessTable(text: string): ProcessRow[] {
@@ -280,7 +289,7 @@ export class AgentProcessMonitor {
 		const processes: AgentProcessEntry[] = [...this.tracked.values()].filter(item => this.now() - item.seenAt >= 5000)
 			.sort((a, b) => a.seenAt - b.seenAt || a.row.pid - b.row.pid)
 			.map(item => ({ id: identity(item.row), pid: item.row.pid, chatId: item.owner.chatId, command: item.row.command,
-				source: item.owner.source, startedAt: item.seenAt, detached: item.detached, attribution: item.attribution }));
+				source: item.owner.source, startedAt: startedAt(item), detached: item.detached, attribution: item.attribution }));
 		this.publish({ supported: true, processes, ...(truncated ? { truncated: true } : {}), ...(unavailable ? { unavailable: true } : {}) });
 	}
 

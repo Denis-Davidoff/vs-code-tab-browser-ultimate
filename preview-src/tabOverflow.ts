@@ -1,8 +1,9 @@
 /**
  * Which tabs of the narrow strip fit in its row, and which go into the overflow dropdown
  * (leaf, under test). The tab in front is always shown; the others are taken in strip order
- * while they fit at their own width; the rest overflow. The overflow button is reserved only
- * when something overflows.
+ * while they fit at their own width; the rest overflow. The caller decides how much room the
+ * dropdown button takes: the strip shows it always, so it passes the room without it and
+ * `overflowWidth: -gap`.
  */
 export interface TabFitInput {
 	/** Each tab's width in strip order; the front tab's at its front width. */

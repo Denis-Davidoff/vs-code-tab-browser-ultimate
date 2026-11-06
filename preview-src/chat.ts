@@ -3,6 +3,7 @@ import { initChatAppearance, getChatFileIcons, setChatFileIcons } from './chatAp
 import { overlayBounds, fitOverlay, anchoredOverlay } from './overlayPosition';
 import { chatTabDragType, parseChatTabTransfer } from './tabDrag';
 import { fitTabs } from './tabOverflow';
+import { allTotals, groupStrip, projectColors, projectOf, tabForProject, type GroupedStrip, type ProjectGroup } from './tabProjects';
 import { createVsCodeChatHost } from './chatHost';
 import { citationInsertionOffset } from '../src/chat/citationPlacement';
 import { updateRichEntry, updateResultBlocks, bindCitationMarkers, citationButton, type RichViewActions } from './richViews';
@@ -70,7 +71,6 @@ import type {
 import type { ChatSound, ChatSoundSettings } from '../src/chat/chatProtocol';
 import { chatSoundLabels, playChatSound, unlockChatSound } from './chatSound';
 unlockChatSound(document);
-import { baseName, searchPaths } from './fileRank';
 import { ComposerSwipe, swipeGapMs } from './composerSwipe';
 import { controlOf, connectionPermissionGroups, readConnectionPermissions, type ConnectionPermission, type Availability } from '../src/chat/core/commands';
 import { chatConnectionsEnabled } from '../src/chat/core/chatFeatures';
@@ -1108,9 +1108,49 @@ function renderComposerAccess(s: ChatViewState): void {
 		composerAccessList.append(el('div', { class: 'cl-row static' }, ...clRow(lead('terminal'), t.name, [chip(t.watch ? 'Watch only' : 'Read · type with approval', t.watch ? 'plain' : 'mine')])));
 	}
 }
+/**
+ * The Conversation and Bash tabs show their newest rows only: `composerListStep` at first, and
+ * "Show more" at the foot adds another step. Nothing is dropped from the state; the cap bounds
+ * what the list builds in the DOM. Reset when another chat is shown.
+ */
+const composerListStep = 100;
+let composerListChat = '';
+let composerHistoryShown = composerListStep;
+let composerBashShown = composerListStep;
+function resetComposerListLimits(chatId: string | undefined): void {
+	if ((chatId ?? '') === composerListChat) { return; }
+	composerListChat = chatId ?? '';
+	composerHistoryShown = composerListStep;
+	composerBashShown = composerListStep;
+}
+/**
+ * Elapsed time of a running command or process, written as the chat writes its own durations
+ * ("1m 52s"). `tickBashElapsed` rewrites it each second in place, so the rows are not rebuilt (#365).
+ */
+function elapsedSpan(since: number): HTMLElement {
+	const span = el('span', { class: 'cl-elapsed', text: duration(Date.now() - since) });
+	span.dataset.since = String(since);
+	return span;
+}
+function tickBashElapsed(): void {
+	const now = Date.now();
+	for (const node of composerBashList.querySelectorAll<HTMLElement>('[data-since]')) {
+		const text = duration(now - Number(node.dataset.since));
+		if (node.textContent !== text) { node.textContent = text; }
+	}
+}
+setInterval(() => { if (composerTab === 'bash') { tickBashElapsed(); } }, 1000);
+/** A "Show more" row for a list cut at `cap` rows; `grow` raises the cap and rebuilds the tab. */
+function showMoreRow(total: number, cap: number, grow: () => void): HTMLElement {
+	const more = button(clRow(el('span', { class: 'cl-lead cl-icon' }, icon('history')), `Show ${composerListStep} more`,
+		[el('span', { text: `${total - cap} older not shown` })], icon('chevron-down', 'cl-chevron')), { class: 'cl-row', title: 'Show more rows of this list' });
+	more.addEventListener('click', grow);
+	return more;
+}
 /** The user's own messages in this chat, newest first; a click scrolls the thread to one. */
 function renderComposerHistory(): void {
 	if (composerTab !== 'history') { return; }
+	resetComposerListLimits(state?.chatId);
 	const prompts: { index: number; text: string; at?: number; answer?: number; rows: readonly number[]; files: ReturnType<typeof messageFiles>; content: MessageContent[] }[] = [];
 	const entries = state?.entries ?? [];
 	for (const turn of turnsOf(entries)) {
@@ -1121,13 +1161,14 @@ function renderComposerHistory(): void {
 	prompts.reverse();
 	const earlier = state?.entriesOffset ?? 0;
 	const root = state?.workdir.current?.path;
-	const shape = JSON.stringify([state?.chatId ?? '', root, earlier, prompts]);
+	const shape = JSON.stringify([state?.chatId ?? '', root, earlier, composerHistoryShown, prompts]);
 	if (shape === composerHistoryShape) { return; }
 	composerHistoryShape = shape;
 	composerHistoryList.replaceChildren();
 	composerHistoryList.append(clHead('Your messages', prompts.length, 'Messages you sent in this chat; click one to scroll to it'));
 	if (!prompts.length) { composerHistoryList.append(clEmpty('history', 'No messages in this chat yet.')); return; }
-	for (const p of prompts) {
+	const shown = prompts.slice(0, composerHistoryShown);
+	for (const p of shown) {
 		const line = p.text.replace(/\s+/g, ' ');
 		const row = button(clRow(
 			el('span', { class: 'cl-lead cl-icon' }, icon('comment')),
@@ -1185,6 +1226,9 @@ function renderComposerHistory(): void {
 		}
 		composerHistoryList.append(group);
 	}
+	if (prompts.length > shown.length) {
+		composerHistoryList.append(showMoreRow(prompts.length, shown.length, () => { composerHistoryShape = ''; composerHistoryShown += composerListStep; renderComposerHistory(); }));
+	}
 	if (earlier) {
 		// Only the last turns are loaded (`windowEntries`); the rest come on request, as from the top of the thread.
 		const more = button(clRow(el('span', { class: 'cl-lead cl-icon' }, icon('history')), 'Show earlier messages', [], icon('chevron-down', 'cl-chevron')), { class: 'cl-row', title: 'Load earlier messages of this chat' });
@@ -1241,6 +1285,7 @@ function closeFrontTab(): void {
 }
 function renderComposerBash(): void {
 	syncProcessWatch();
+	resetComposerListLimits(state?.chatId);
 	const loaded = (state?.entries ?? []).filter((e): e is ToolEntry => e.kind === 'tool' && e.tool === 'command');
 	const commands = [...new Map([...(state?.runningShells ?? []), ...loaded].map(e => [e.id, e])).values()].sort((a, b) => a.startedAt - b.startedAt);
 	if (pendingBashReveal) {
@@ -1274,7 +1319,7 @@ function renderComposerBash(): void {
 	const earlier = state?.entriesOffset ?? 0;
 	// Only what the rows show: a streaming command's output must not rebuild the
 	// list, or a click spanning a post and the focus on a row are lost (#365).
-	const shape = JSON.stringify([state?.chatId, earlier,
+	const shape = JSON.stringify([state?.chatId, earlier, composerBashShown,
 		commands.map(e => [e.id, e.status, e.exitCode, e.input?.trim() || e.detail || e.name, e.shell?.background, Math.floor((now - e.startedAt) / 60_000)]),
 		state?.agentProcesses && [state.agentProcesses.supported, state.agentProcesses.unavailable, state.agentProcesses.truncated,
 			observed.map(p => [p.id, p.pid, p.command, p.source, p.detached])]]);
@@ -1285,13 +1330,14 @@ function renderComposerBash(): void {
 	const active = document.activeElement;
 	const focusedKey = active instanceof HTMLElement && composerBashList.contains(active) ? focusKeyIn(active) : undefined;
 	composerBashList.replaceChildren();
-	const section = (title: string, rows: ToolEntry[], empty: string) => {
+	const section = (title: string, rows: ToolEntry[], empty: string, cap = Infinity) => {
 		composerBashList.append(clHead(title, rows.length));
 		if (!rows.length) { composerBashList.append(clEmpty('terminal', empty)); }
-		for (const entry of rows.toReversed()) {
+		for (const entry of rows.toReversed().slice(0, cap)) {
 			const command = entry.input?.trim() || entry.detail || entry.name;
 			const meta: Child[] = [el('span', { text: entry.status === 'running' ? entry.shell?.background ? 'Running · background' : 'Running' : entry.status })];
 			if (entry.exitCode !== undefined) { meta.push(el('span', { text: `Exit ${entry.exitCode}` })); }
+			if (entry.status === 'running') { meta.push(elapsedSpan(entry.startedAt)); }
 			meta.push(el('span', { text: ago(entry.startedAt) }));
 			const row = button(clRow(el('span', { class: 'cl-lead cl-icon' }, icon('terminal')),
 				command.replace(/\s+/g, ' ').slice(0, 200), meta, icon('arrow-up', 'cl-chevron')),
@@ -1328,7 +1374,7 @@ function renderComposerBash(): void {
 		for (const item of observed.toReversed()) {
 			const row = el('div', { class: 'cl-row', title: item.command }, ...clRow(el('span', { class: 'cl-lead cl-icon' }, icon('terminal')),
 				item.command, [el('span', { text: `PID ${item.pid}` }), el('span', { text: item.source }),
-					el('span', { text: item.detached ? 'Detached · observed running' : 'Observed running' })]));
+					el('span', { text: item.detached ? 'Detached · observed running' : 'Observed running' }), elapsedSpan(item.startedAt)]));
 			const options = button([icon('ellipsis')], { class: 'cl-answer cl-more', title: 'Look inside this process' });
 			row.dataset.agentProcessId = item.id;
 			options.setAttribute('aria-label', `Options for process ${item.pid}`);
@@ -1350,7 +1396,10 @@ function renderComposerBash(): void {
 		}
 		if (snapshot.truncated) { composerBashList.append(clEmpty('info', 'The process list reached its monitoring limit.')); }
 	}
-	section('All calls', commands, 'No shell commands in this chat yet.');
+	section('All calls', commands, 'No shell commands in this chat yet.', composerBashShown);
+	if (commands.length > composerBashShown) {
+		composerBashList.append(showMoreRow(commands.length, composerBashShown, () => { composerBashShape = ''; composerBashShown += composerListStep; renderComposerBash(); }));
+	}
 	if (earlier) {
 		const more = button(clRow(el('span', { class: 'cl-lead cl-icon' }, icon('history')), 'Show earlier calls', [], icon('chevron-down', 'cl-chevron')), { class: 'cl-row' });
 		more.addEventListener('click', () => { composerBashShape = ''; loadEarlier(); });
@@ -3159,15 +3208,7 @@ vscode.onMessage(message => {
 			return;
 		}
 		case 'workdirFiles':
-			// Kept by folder: two listings can be in flight at once, a slow one for
-			// the tab left behind arriving after the one for the tab in front.
-			workdirListings.set(message.folder, { entries: message.entries, truncated: message.truncated, revision: ++workdirRevision });
-			while (workdirListings.size > 8) {
-				workdirListings.delete(workdirListings.keys().next().value!);
-			}
-			if (state) {
-				renderWorkdir(state);
-			}
+			// The folder button no longer lists files; an older host may still answer.
 			return;
 		case 'restoreDraft':
 			// Stop gave the queue back: added to what is in the box, never sent.
@@ -3381,8 +3422,7 @@ tabRow.id = 'chat-tab-list';
 const drawerToggle = button([], { class: 'ghost round chat-drawer-toggle' });
 drawerToggle.setAttribute('aria-controls', tabRow.id);
 const drawerSideToggle = button([], { class: 'ghost round chat-drawer-side-toggle' });
-const drawerHeader = el('div', { class: 'chat-drawer-header' },
-	el('span', { class: 'chat-drawer-title', text: 'Chats' }), drawerToggle);
+const drawerHeader = el('div', { class: 'chat-drawer-header' }, drawerToggle);
 const drawerFooter = el('div', { class: 'chat-drawer-footer' }, drawerSideToggle);
 function updateChatDrawer(): void {
 	app.classList.toggle('chat-drawer-collapsed', chatDrawerCollapsed);
@@ -3417,6 +3457,7 @@ drawerToggle.addEventListener('click', () => {
 wideChat.addEventListener('change', () => {
 	for (const { root } of tabNodes.values()) { tabResizeEnds.get(root)?.(); }
 	updateChatDrawer();
+	if (state) { renderTabs(state); }
 	layoutTabOverflow(true);
 });
 updateChatDrawer();
@@ -3592,10 +3633,11 @@ tabAddTerminal.addEventListener('click', () => {
 	if (items.length) { openMenu(tabAddTerminal, items, 'Open new terminal'); }
 });
 /*
- * The narrow strip's overflow: the tabs that do not fit in the row are hidden (a class: the keyed
- * nodes stay, #365/#383) and listed in a dropdown behind a "+N" button. The tab in front is always
- * shown. Each row selects its tab; a right-click, the context-menu key or its "⋯" opens the tab's
- * own context menu over the dropdown.
+ * The narrow strip's tab list: a dropdown button always at the right end of the row, listing every
+ * tab with its whole name (asked for: the strip cuts titles short). The tabs that do not fit in the
+ * row are hidden (a class: the keyed nodes stay, #365/#383) and the button then counts them ("+N").
+ * The tab in front is always shown. Each row selects its tab; a right-click, the context-menu key or
+ * its "⋯" opens the tab's own context menu over the dropdown.
  */
 const overflowCount = el('span', { class: 'tab-overflow-count' });
 const overflowButton = button([icon('chevron-down'), overflowCount], { class: 'ghost tab-overflow-button' });
@@ -3610,8 +3652,13 @@ let overflowPanelShape = '';
 /** A tab renamed from the dropdown's menu: selected first, renamed once it is shown. */
 let renameWhenShown: string | undefined;
 
+/** Out of the narrow row: in the dropdown, or a tab of another project than the one on show. */
+function tabOffStrip(root: HTMLElement): boolean {
+	return root.classList.contains('overflowed') || root.classList.contains('project-hidden');
+}
+
 function renameFromMenu(node: TabNode): void {
-	if (!node.root.classList.contains('overflowed')) { startRename(node); return; }
+	if (!tabOffStrip(node.root)) { startRename(node); return; }
 	if (gate(node.tab.terminal ? 'selectTerminal' : 'selectTab').s !== 'on') { return; }
 	renameWhenShown = node.tab.id;
 	post(node.tab.terminal ? { type: 'selectTerminal', id: node.tab.id } : { type: 'selectTab', id: node.tab.id });
@@ -3621,7 +3668,10 @@ function renameFromMenu(node: TabNode): void {
 function layoutTabOverflow(force = false): void {
 	const s = state;
 	const strip = s ? stripOf(s) : [];
-	const nodes = strip.map(t => tabNodes.get(t.id)).filter((n): n is TabNode => !!n);
+	const all = (grouped && grouped.groups.length >= 2 ? grouped.ordered : strip).map(t => tabNodes.get(t.id)).filter((n): n is TabNode => !!n);
+	// Tabs of another project than the one on show are out of the row altogether, not in the dropdown's count.
+	for (const n of all) { if (n.root.classList.contains('project-hidden')) { n.root.classList.remove('overflowed'); } }
+	const nodes = all.filter(n => !n.root.classList.contains('project-hidden'));
 	if (wideChat.matches || !s || !nodes.length) {
 		for (const n of nodes) { n.root.classList.remove('overflowed'); }
 		overflowButton.hidden = true;
@@ -3651,18 +3701,20 @@ function layoutTabOverflow(force = false): void {
 	const available = tabRow.clientWidth - parseFloat(rowStyle.paddingLeft) - parseFloat(rowStyle.paddingRight) - adds - 1;
 	const overflowWidth = overflowButton.getBoundingClientRect().width + gap;
 	tabRow.classList.remove('measuring');
-	const fit = fitTabs({ widths, front: nodes.findIndex(n => n.tab.id === frontId), pinned: nodes.findIndex(n => n.tab.id === stickyTabId), available, gap, overflowWidth });
+	// The button is always there, so its room is taken off before anything is fitted; `-gap` cancels the
+	// gap fitTabs reserves for a button it thinks appears only on overflow.
+	const fit = fitTabs({ widths, front: nodes.findIndex(n => n.tab.id === frontId), pinned: nodes.findIndex(n => n.tab.id === stickyTabId),
+		available: available - overflowWidth, gap, overflowWidth: -gap });
 	const hidden = new Set(fit.hidden);
 	nodes.forEach((n, i) => n.root.classList.toggle('overflowed', hidden.has(i)));
 	overflowIds = fit.hidden.map(i => nodes[i].tab.id);
-	overflowButton.hidden = !overflowIds.length;
+	overflowButton.hidden = false;
 	// Tabs that no longer fit: the ones still shown share the whole width left of the buttons.
 	tabRow.classList.toggle('stretched', overflowIds.length > 0);
-	overflowCount.textContent = String(overflowIds.length);
-	const more = `${overflowIds.length} more tab${overflowIds.length === 1 ? '' : 's'}`;
+	overflowCount.textContent = overflowIds.length ? String(overflowIds.length) : '';
+	const more = overflowIds.length ? `All tabs · ${overflowIds.length} hidden` : 'All tabs';
 	overflowButton.title = more;
 	overflowButton.setAttribute('aria-label', more);
-	if (!overflowIds.length && tabOverflowPanel.classList.contains('open')) { closePopups(); }
 	if (tabOverflowPanel.classList.contains('open')) { fillOverflowPanel(); }
 	placeTabConfirm();
 }
@@ -3682,6 +3734,21 @@ function selectStripTab(t: StripTab): void {
 /** The tab last chosen from the dropdown: it keeps its place in the strip while other shown tabs are selected. */
 let stickyTabId: string | undefined;
 let overflowMenuRow: HTMLElement | undefined;
+/** The dropdown row being dragged. The list stays open while it is held, so the row can be placed within the list. */
+let overflowDrag: HTMLElement | undefined;
+
+function clearOverflowDropMarks(): void {
+	for (const item of tabOverflowPanel.querySelectorAll<HTMLElement>('.tab-overflow-item')) { item.classList.remove('drop-before', 'drop-after'); }
+}
+
+// While a dropdown row is held, the list dims when the pointer is outside it, so the strip under it can take the drop.
+// Capture phase: the strip's own dragover handlers stop propagation, so a bubbling listener would miss the pointer.
+document.addEventListener('dragover', event => {
+	if (!overflowDrag || !tabOverflowPanel.classList.contains('open')) { return; }
+	const r = tabOverflowPanel.getBoundingClientRect();
+	const inside = event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom;
+	tabOverflowPanel.classList.toggle('drag-away', !inside);
+}, true);
 
 /** A close started from the dropdown closes it first, or its confirmation is drawn under it. */
 function closeFromStrip(node: TabNode): void {
@@ -3690,12 +3757,18 @@ function closeFromStrip(node: TabNode): void {
 }
 
 function fillOverflowPanel(): void {
-	const rows = overflowIds.map(id => tabNodes.get(id)).filter((n): n is TabNode => !!n);
-	const shape = JSON.stringify(rows.map(n => [n.tab.id, n.shown]));
+	const front = state ? frontStripId(state) : undefined;
+	const byProject = !!grouped && grouped.groups.length >= 2;
+	const rows = (state ? (byProject ? grouped!.ordered : stripOf(state)) : []).map(t => tabNodes.get(t.id)).filter((n): n is TabNode => !!n);
+	const shape = JSON.stringify([front, overflowIds, projectFilter, rows.map(n => [n.tab.id, n.shown, n.tab.project?.id])]);
+	// A rebuild would detach the row being dragged, and its dragend would never arrive: wait for it.
+	if (overflowDrag?.isConnected) { return; }
 	if (shape === overflowPanelShape && tabOverflowPanel.childElementCount) { return; }
 	const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('.tab-overflow-row')?.dataset.id;
 	overflowPanelShape = shape;
-	tabOverflowPanel.replaceChildren(el('div', { class: 'menu-heading' }, el('span', { text: 'More tabs' })), ...rows.map(node => {
+	const shownCount = rows.filter(n => !n.root.classList.contains('project-hidden')).length - overflowIds.length;
+	const heading = `All tabs · ${shownCount} shown${overflowIds.length ? `, ${overflowIds.length} hidden` : ''}`;
+	const items = rows.map(node => {
 		const t = node.tab;
 		const marks: (HTMLElement | undefined)[] = t.terminal
 			? [icon('terminal', 'menu-icon'), t.terminal.status === 'exited' ? el('span', { class: 'tab-mark exited', title: 'The process ended' }) : undefined]
@@ -3706,15 +3779,21 @@ function fillOverflowPanel(): void {
 			...marks.filter((m): m is HTMLElement => !!m),
 			el('span', { class: 'menu-text' }, el('span', { class: 'menu-label', text: name })),
 			agents ? el('span', { class: 'tab-agents', text: agents > 99 ? '99+' : String(agents) }) : '',
-		], { class: 'menu-item tab-overflow-row' });
+		], { class: `menu-item tab-overflow-row${t.id === front ? ' current' : ''}${node.root.classList.contains('project-hidden') ? ' other-project' : overflowIds.includes(t.id) ? ' hidden-tab' : ' shown-tab'}` });
 		row.dataset.id = t.id;
+		if (t.id === front) { row.setAttribute('aria-current', 'true'); }
 		row.setAttribute('role', 'menuitem');
 		row.title = `${node.label.getAttribute('aria-label') ?? name}\nRight-click for tab actions.`;
 		const select = gate(t.terminal ? 'selectTerminal' : 'selectTab');
 		row.disabled = select.s !== 'on';
 		const more = button([icon('ellipsis')], { class: 'ghost round tab-overflow-more', title: 'Tab actions' });
 		more.addEventListener('click', event => { event.stopPropagation(); overflowMenuRow = row; node.openMenu(row, tabOverflowPanel); });
-		row.addEventListener('click', () => { stickyTabId = t.id; overflowShape = ''; closePopups(); selectStripTab(t); });
+		row.addEventListener('click', () => {
+			// A tab brought out of hiding keeps its place in the strip; one already shown is just selected.
+			if (overflowIds.includes(t.id)) { stickyTabId = t.id; overflowShape = ''; }
+			closePopups();
+			if (t.id !== front) { selectStripTab(t); }
+		});
 		const closeLabel = t.terminal ? 'Close terminal' : 'Close tab';
 		const closer = button([icon('close')], { class: 'ghost round tab-overflow-close', title: closeLabel });
 		closer.setAttribute('aria-label', closeLabel);
@@ -3722,32 +3801,64 @@ function fillOverflowPanel(): void {
 		closer.addEventListener('click', event => { event.stopPropagation(); closeFromStrip(node); });
 		const wrap = el('div', { class: 'tab-overflow-item' }, row, closer, more);
 		{
-			// Drag a hidden tab out of the list onto the strip. The panel is only hidden (its nodes stay), after the
-			// drag has started, so the source survives and dragend fires; the strip's own drop handlers do the rest.
+			// Drag a row within the list to reorder it (the list stays open), or out of it onto the strip: the list
+			// dims while the pointer is outside it, and the strip's own drop handlers do the rest.
 			wrap.draggable = true;
 			wrap.addEventListener('dragstart', event => {
 				if (!event.dataTransfer || gate(t.terminal ? 'placeTerminal' : 'placeTab').s !== 'on') { event.preventDefault(); return; }
+				overflowDrag = wrap;
+				event.dataTransfer.effectAllowed = 'move';
 				if (t.terminal) {
-					event.dataTransfer.effectAllowed = 'move';
 					event.dataTransfer.setData('text/plain', t.title);
 					draggedTerminal = t.id;
 					wrap.classList.add('dragging');
-					setTimeout(() => closePopups(), 0);
 					return;
 				}
 				saveDraft();
 				draggedChatTab = { id: t.id, draft: t.id === draftTab ? currentDraft() : drafts[t.chatId] ?? '' };
-				event.dataTransfer.effectAllowed = 'move';
 				event.dataTransfer.setData(chatTabDragType, JSON.stringify({ source: state?.surfaceId, id: t.id, token: state?.dragToken }));
 				post({ type: 'beginTabDrag', id: t.id, draft: draggedChatTab.draft });
 				wrap.classList.add('dragging');
-				setTimeout(() => closePopups(), 0);
 			});
-			wrap.addEventListener('dragend', () => {
+			// Only a row of the same kind takes a drop: a conversation among conversations, a terminal among terminals,
+			// as on the strip (terminals come after the conversations there too, so they are not interleaved).
+			wrap.addEventListener('dragover', event => {
+				if (!overflowDrag || !(t.terminal ? draggedTerminal : draggedChatTab)) { return; }
+				event.preventDefault();
+				event.stopPropagation();
+				if (event.dataTransfer) { event.dataTransfer.dropEffect = 'move'; }
+				clearOverflowDropMarks();
+				if ((t.terminal ? draggedTerminal : draggedChatTab?.id) === t.id) { return; }
+				const rect = wrap.getBoundingClientRect();
+				wrap.classList.add(event.clientY >= rect.top + rect.height / 2 ? 'drop-after' : 'drop-before');
+			});
+			wrap.addEventListener('drop', event => {
+				if (!overflowDrag || !(t.terminal ? draggedTerminal : draggedChatTab)) { return; }
+				event.preventDefault();
+				event.stopPropagation();
+				const id = t.terminal ? draggedTerminal! : draggedChatTab!.id;
+				if (id !== t.id) {
+					const rect = wrap.getBoundingClientRect();
+					const after = event.clientY >= rect.top + rect.height / 2;
+					post(t.terminal ? { type: 'placeTerminal', id, target: t.id, after } : { type: 'placeTab', id, target: t.id, after });
+				}
+				clearOverflowDropMarks();
+			});
+			wrap.addEventListener('dragend', event => {
+				const r = tabOverflowPanel.getBoundingClientRect();
+				const inside = event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom;
 				draggedChatTab = undefined;
 				chatTabDragEnded = performance.now();
+				overflowDrag = undefined;
 				wrap.classList.remove('dragging');
 				clearTabDropMarks();
+				clearOverflowDropMarks();
+				tabOverflowPanel.classList.remove('drag-away');
+				// Dropped outside the list (on the strip, or nowhere): the list closes, as it always did.
+				if (!inside) { closePopups(); return; }
+				// Dropped inside: the list is rebuilt from the state, which the drop's own post is about to change.
+				overflowPanelShape = '';
+				fillOverflowPanel();
 			});
 		}
 		wrap.addEventListener('contextmenu', event => {
@@ -3757,7 +3868,26 @@ function fillOverflowPanel(): void {
 			node.openMenu(row, tabOverflowPanel);
 		});
 		return wrap;
-	}));
+	});
+	// By project: a heading over each project's tabs, with what is going on there.
+	const body: HTMLElement[] = [];
+	if (byProject) {
+		const at = new Map(rows.map((n, i) => [n.tab.id, items[i]]));
+		for (const g of grouped!.groups) {
+			body.push(el('div', { class: `tab-overflow-project${g.id === projectFilter ? ' current' : ''}`, title: projectTip(g.name, { tabs: g.tabs.length, thinking: g.thinking, unread: g.unread, waiting: g.waiting, failed: g.failed }) },
+				projectFolder(g.id), el('span', { class: 'project-name', text: g.name }),
+				...projectMarks(g), el('span', { class: 'project-count', text: String(g.tabs.length) })));
+			for (const t of g.tabs) { const w = at.get(t.id); if (w) { body.push(w); } }
+		}
+		if (grouped!.terminals.length) {
+			body.push(el('div', { class: 'tab-overflow-project' }, icon('terminal', 'project-icon'), el('span', { class: 'project-name', text: 'Terminals' }),
+				el('span', { class: 'project-count', text: String(grouped!.terminals.length) })));
+			for (const t of grouped!.terminals) { const w = at.get(t.id); if (w) { body.push(w); } }
+		}
+	} else {
+		body.push(...items);
+	}
+	tabOverflowPanel.replaceChildren(el('div', { class: 'menu-heading' }, el('span', { text: heading })), ...body);
 	if (focused) { tabOverflowPanel.querySelector<HTMLElement>(`.tab-overflow-row[data-id="${CSS.escape(focused)}"]`)?.focus(); }
 }
 
@@ -3766,7 +3896,10 @@ function openOverflow(focusFirst: boolean): void {
 	fillOverflowPanel();
 	openAbove(tabOverflowPanel, overflowButton, 'right');
 	overflowButton.setAttribute('aria-expanded', 'true');
-	if (focusFirst) { tabOverflowPanel.querySelector<HTMLButtonElement>('.tab-overflow-row:not(:disabled)')?.focus(); }
+	if (focusFirst) {
+		(tabOverflowPanel.querySelector<HTMLButtonElement>('.tab-overflow-row.current:not(:disabled)')
+			?? tabOverflowPanel.querySelector<HTMLButtonElement>('.tab-overflow-row:not(:disabled)'))?.focus();
+	}
 }
 overflowButton.addEventListener('click', () => {
 	if (tabOverflowPanel.classList.contains('open')) { closePopups(); return; }
@@ -3941,10 +4074,18 @@ tabRow.addEventListener('drop', event => {
 });
 // A terminal drag is local: accept it anywhere in the view (the drop lands after the last terminal),
 // and clear it from the document, since the source node may have been rebuilt before dragend.
-app.addEventListener('dragover', event => { if (draggedTerminal) { event.preventDefault(); if (event.dataTransfer) { event.dataTransfer.dropEffect = 'move'; } } });
+// Not inside the open tab list, though: there only a terminal row takes it (its own handlers stop
+// the event), and a release on a conversation row or a heading must move nothing.
+const inTabList = (event: Event): boolean => event.target instanceof Node && tabOverflowPanel.contains(event.target);
+app.addEventListener('dragover', event => {
+	if (!draggedTerminal) { return; }
+	event.preventDefault();
+	if (event.dataTransfer) { event.dataTransfer.dropEffect = inTabList(event) ? 'none' : 'move'; }
+});
 app.addEventListener('dragenter', event => { if (draggedTerminal) { event.preventDefault(); } });
 app.addEventListener('drop', event => {
 	if (!draggedTerminal) { return; }
+	if (inTabList(event)) { event.preventDefault(); clearTabDropMarks(); return; }
 	event.preventDefault();
 	dropTerminal(undefined, event);
 	clearTabDropMarks();
@@ -3977,6 +4118,164 @@ function stripOf(s: ChatViewState): readonly StripTab[] {
 	return s.tabs;
 }
 
+/* ---------------------------------------------------------------- projects */
+
+/**
+ * Tabs grouped by project (the working folder, or a copy's repository). The narrow
+ * strip gets a thin bar above it — All, then each project with its tab count, how
+ * many tabs are thinking and a mark for unread results — and shows the chosen
+ * project's tabs only; the wide drawer lists every project under a heading of its
+ * own that folds. Both appear only once tabs of two projects are open.
+ * The choice and the folded headings are per device (`localStorage`).
+ */
+const projectFilterKey = 'aiBrowser.chat.projectFilter';
+const projectFoldKey = 'aiBrowser.chat.foldedProjects';
+let projectFilter: string | undefined = (() => { try { return localStorage.getItem(projectFilterKey) ?? undefined; } catch { return undefined; } })();
+const foldedProjects = new Set<string>((() => { try { const v = JSON.parse(localStorage.getItem(projectFoldKey) ?? '[]') as unknown; return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []; } catch { return []; } })());
+/** The tab last in front in each project, brought back when the project is chosen again. */
+const projectLastTab = new Map<string, string>();
+/** A project chosen in the bar whose tab is on its way to the front: the filter does not follow the old front meanwhile. */
+let projectHold: { readonly project: string; readonly until: number } | undefined;
+let grouped: GroupedStrip<StripTab> | undefined;
+let projectBarShape = '';
+const projectBar = el('div', { class: 'project-bar' });
+projectBar.setAttribute('role', 'tablist');
+projectBar.setAttribute('aria-label', 'Projects');
+const projectHeads = new Map<string, { root: HTMLElement; shape: string }>();
+/** Each project's folder colour, a slot of the palette in chat.css (`.pc-0` … `.pc-11`), kept per device. */
+const projectColorKey = 'aiBrowser.chat.projectColors';
+const projectColorSlots = 12;
+let projectColorMap: Record<string, number> = (() => {
+	try {
+		const v = JSON.parse(localStorage.getItem(projectColorKey) ?? '{}') as unknown;
+		return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, number> : {};
+	} catch { return {}; }
+})();
+
+/** Gives the open projects their colours, distinct from one another, and keeps the answer. */
+function assignProjectColors(ids: readonly string[]): void {
+	const next = projectColors(ids, projectColorMap, projectColorSlots);
+	const text = JSON.stringify(next);
+	if (text === JSON.stringify(projectColorMap)) { return; }
+	projectColorMap = next;
+	try { localStorage.setItem(projectColorKey, text); } catch { /* this page only */ }
+}
+
+/** A project's folder icon, in its colour. */
+function projectFolder(id: string): HTMLElement {
+	const slot = projectColorMap[id];
+	return icon('folder', slot === undefined ? 'project-icon' : `project-icon project-color pc-${slot}`);
+}
+
+function saveProjectFilter(): void {
+	try { if (projectFilter === undefined) { localStorage.removeItem(projectFilterKey); } else { localStorage.setItem(projectFilterKey, projectFilter); } } catch { /* this page only */ }
+}
+
+function chooseProject(id: string | undefined): void {
+	if (projectFilter === id) { return; }
+	projectFilter = id;
+	saveProjectFilter();
+	const s = state;
+	if (s && id !== undefined) {
+		const group = grouped?.groups.find(g => g.id === id);
+		const front = frontStripId(s);
+		const frontTab = stripOf(s).find(t => t.id === front);
+		if (group && (!frontTab || frontTab.terminal || projectOf(frontTab) !== id)) {
+			const next = tabForProject(group, projectLastTab.get(id));
+			if (next && gate('selectTab').s === 'on') {
+				projectHold = { project: id, until: performance.now() + 2000 };
+				post({ type: 'selectTab', id: next.id });
+			}
+		}
+	}
+	if (s) { renderTabs(s); }
+}
+
+/** A count with the marks a project carries: thinking (the loader and how many), waiting, unread, failed. */
+function projectMarks(g: { thinking: number; unread: number; waiting: number; failed: number }): HTMLElement[] {
+	const marks: HTMLElement[] = [];
+	if (g.waiting) { marks.push(el('span', { class: 'project-mark waiting', title: `${g.waiting} waiting for your answer` })); }
+	if (g.thinking) {
+		marks.push(el('span', { class: 'project-num thinking', title: `${g.thinking} thinking`, text: String(g.thinking) }));
+	}
+	if (g.unread) { marks.push(el('span', { class: 'project-num unread', title: `${g.unread} finished, not read yet`, text: String(g.unread) })); }
+	if (g.failed) { marks.push(el('span', { class: 'project-mark failed', title: `${g.failed} ended in an error` })); }
+	return marks;
+}
+
+function projectTip(name: string, g: { tabs: number; thinking: number; unread: number; waiting: number; failed: number }): string {
+	const parts = [`${g.tabs} ${g.tabs === 1 ? 'tab' : 'tabs'}`];
+	if (g.thinking) { parts.push(`${g.thinking} thinking`); }
+	if (g.waiting) { parts.push(`${g.waiting} waiting for you`); }
+	if (g.unread) { parts.push(`${g.unread} unread`); }
+	if (g.failed) { parts.push(`${g.failed} failed`); }
+	return `${name} · ${parts.join(' · ')}`;
+}
+
+function renderProjectBar(groups: readonly ProjectGroup<StripTab>[]): void {
+	const show = groups.length >= 2 && !wideChat.matches;
+	projectBar.hidden = !show;
+	if (!show) { projectBarShape = ''; return; }
+	const shape = JSON.stringify([projectFilter, groups.map(g => [g.id, g.name, g.tabs.length, g.thinking, g.unread, g.waiting, g.failed, projectColorMap[g.id]])]);
+	if (shape === projectBarShape) { return; }
+	projectBarShape = shape;
+	const total = allTotals(groups);
+	const chip = (id: string | undefined, name: string, counts: typeof total, extra = ''): HTMLElement => {
+		const active = projectFilter === id;
+		// Outside the project on show, what waits there is what the bar has to say: it lights up.
+		const calls = !active && (counts.unread > 0 || counts.waiting > 0);
+		const b = button([
+			id === undefined ? icon('layers', 'project-icon') : projectFolder(id),
+			el('span', { class: 'project-name' }, el('span', { text: name })),
+			el('span', { class: 'project-count', text: String(counts.tabs) }),
+			...projectMarks(counts),
+		], { class: `project-chip${active ? ' active' : ''}${calls ? ' calls' : ''}${extra}`, title: projectTip(name, counts) });
+		b.setAttribute('role', 'tab');
+		b.setAttribute('aria-selected', String(active));
+		b.addEventListener('click', () => chooseProject(id));
+		return b;
+	};
+	const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('.project-chip')?.dataset.id;
+	const chips = [chip(undefined, 'All', total, ' all'), ...groups.map(g => {
+		const c = chip(g.id, g.name, { tabs: g.tabs.length, thinking: g.thinking, unread: g.unread, waiting: g.waiting, failed: g.failed });
+		c.dataset.id = g.id;
+		return c;
+	})];
+	chips[0].dataset.id = '';
+	projectBar.replaceChildren(...chips);
+	if (focused !== undefined) { projectBar.querySelector<HTMLElement>(`.project-chip[data-id="${CSS.escape(focused)}"]`)?.focus(); }
+	projectBar.querySelector('.project-chip.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+/** A project's heading in the wide drawer: folds its tabs (the tab in front stays). */
+function projectHead(id: string, name: string, counts: { tabs: number; thinking: number; unread: number; waiting: number; failed: number }): HTMLElement {
+	const folded = foldedProjects.has(id);
+	const shape = JSON.stringify([name, counts, folded, projectColorMap[id]]);
+	let head = projectHeads.get(id);
+	if (head?.shape === shape) { return head.root; }
+	const root = head?.root ?? button([], { class: 'project-head' });
+	if (!head) {
+		root.addEventListener('click', () => {
+			if (foldedProjects.has(id)) { foldedProjects.delete(id); } else { foldedProjects.add(id); }
+			try { localStorage.setItem(projectFoldKey, JSON.stringify([...foldedProjects])); } catch { /* this page only */ }
+			if (state) { renderTabs(state); }
+		});
+	}
+	root.replaceChildren(
+		icon(folded ? 'chevron-right' : 'chevron-down', 'project-fold'),
+		id === '\u0000terminals' ? icon('terminal', 'project-icon') : projectFolder(id),
+		el('span', { class: 'project-name', text: name }),
+		...projectMarks(counts),
+		el('span', { class: 'project-count', text: String(counts.tabs) }),
+	);
+	root.classList.toggle('folded', folded);
+	root.classList.toggle('calls', counts.unread > 0 || counts.waiting > 0);
+	root.title = projectTip(name, counts) + (folded ? '\nClick to show its tabs.' : '\nClick to fold.');
+	root.setAttribute('aria-expanded', String(!folded));
+	projectHeads.set(id, { root, shape });
+	return root;
+}
+
 function renderTabs(s: ChatViewState): void {
 	// The conversations, then the terminals; only the editor's state has terminals.
 	const strip = stripOf(s);
@@ -3988,7 +4287,7 @@ function renderTabs(s: ChatViewState): void {
 		editingTab = undefined;
 	}
 	if (!tabStrip.contains(tabRow)) {
-		tabStrip.replaceChildren(drawerHeader, tabRow, drawerFooter);
+		tabStrip.replaceChildren(drawerHeader, projectBar, tabRow, drawerFooter);
 		app.append(tabConfirm, tabOverflowPanel);
 	}
 	const open = new Set(strip.map(t => t.id));
@@ -4001,7 +4300,25 @@ function renderTabs(s: ChatViewState): void {
 	}
 	const switching = frontTab !== undefined && frontId !== frontTab;
 	const tabsBefore = switching ? tabWidths() : undefined;
-	strip.forEach((summary, i) => {
+	// Grouped by project once two are open: the tabs of each sit together, in their own strip order.
+	grouped = groupStrip(strip);
+	const groups = grouped.groups;
+	assignProjectColors(groups.map(g => g.id));
+	const byProject = groups.length >= 2;
+	const frontSummary = strip.find(t => t.id === frontId);
+	if (frontSummary && !frontSummary.terminal) { projectLastTab.set(projectOf(frontSummary), frontSummary.id); }
+	if (projectHold && (performance.now() > projectHold.until || projectHold.project !== projectFilter
+		|| (frontSummary && !frontSummary.terminal && projectOf(frontSummary) === projectHold.project))) { projectHold = undefined; }
+	if (!byProject || (projectFilter !== undefined && !groups.some(g => g.id === projectFilter))) {
+		if (projectFilter !== undefined) { projectFilter = undefined; saveProjectFilter(); }
+	} else if (projectFilter !== undefined && !projectHold && frontSummary && !frontSummary.terminal && projectOf(frontSummary) !== projectFilter) {
+		// The tab in front must be on show: a tab brought forward from elsewhere (history, the list, a new chat) takes its project along.
+		projectFilter = projectOf(frontSummary);
+		saveProjectFilter();
+	}
+	const ordered = byProject ? grouped.ordered : strip;
+	const narrowFilter = !wideChat.matches && byProject ? projectFilter : undefined;
+	ordered.forEach((summary, i) => {
 		const node = tabNodes.get(summary.id) ?? tabNode(summary);
 		const pending = node.pendingTitle;
 		if (pending && (summary.title === pending.title || performance.now() > pending.until)) {
@@ -4019,13 +4336,17 @@ function renderTabs(s: ChatViewState): void {
 		node.root.classList.toggle('chrome-mirrored', t.chrome === true);
 		node.label.setAttribute('aria-current', t.id === frontId ? 'page' : 'false');
 		node.root.classList.toggle('running', t.running);
+		node.root.classList.toggle('project-hidden', narrowFilter !== undefined && !t.terminal && projectOf(t) !== narrowFilter);
+		node.root.classList.toggle('group-folded', wideChat.matches && byProject && t.id !== frontId
+			&& foldedProjects.has(t.terminal ? '\u0000terminals' : projectOf(t)));
 		// What this surface allows on a tab (Chrome picks the conversation it shows, nothing more).
 		// A terminal is never dragged: the strip keeps conversations first.
 		node.close.hidden = gate(t.terminal ? 'closeTerminal' : 'closeTab').s !== 'on';
 		node.root.draggable = gate(t.terminal ? 'placeTerminal' : 'placeTab').s === 'on';
 		// Moved only when out of place: re-inserting an element ends its transition.
-		if (tabRow.children[i] !== node.root) {
-			tabRow.insertBefore(node.root, tabRow.children[i] ?? null);
+		const kids = rowItems();
+		if (kids[i] !== node.root) {
+			tabRow.insertBefore(node.root, kids[i] ?? null);
 		}
 	});
 	// The add buttons close the row: "+" while the conversations are below their limit, and beside it
@@ -4039,17 +4360,21 @@ function renderTabs(s: ChatViewState): void {
 	for (const add of [tabAdd, tabAddTerminal]) {
 		if (!adds.includes(add)) { add.remove(); }
 	}
-	// The add buttons follow the tabs and the overflow button comes last, so with overflowing tabs the row reads
-	// stretched tabs, "+" and terminal, then the dropdown; the button is shown only while tabs overflow.
+	// The add buttons follow the tabs and the tab-list button comes last, pushed to the right end of the row:
+	// tabs, "+" and terminal, then the dropdown, which is always shown in the narrow strip.
 	adds.forEach((add, k) => {
 		add.hidden = false;
-		if (tabRow.children[strip.length + k] !== add) {
-			tabRow.insertBefore(add, tabRow.children[strip.length + k] ?? null);
+		const kids = rowItems();
+		if (kids[strip.length + k] !== add) {
+			tabRow.insertBefore(add, kids[strip.length + k] ?? null);
 		}
 	});
-	if (tabRow.children[strip.length + adds.length] !== overflowButton) {
-		tabRow.insertBefore(overflowButton, tabRow.children[strip.length + adds.length] ?? null);
+	const kids = rowItems();
+	if (kids[strip.length + adds.length] !== overflowButton) {
+		tabRow.insertBefore(overflowButton, kids[strip.length + adds.length] ?? null);
 	}
+	renderProjectHeads(byProject, groups, grouped.terminals, adds);
+	renderProjectBar(groups);
 	// Decided before the switch animation measures, so a tab coming out of the dropdown does not flash.
 	layoutTabOverflow();
 	renderTabConfirm(s);
@@ -4059,7 +4384,7 @@ function renderTabs(s: ChatViewState): void {
 	if (renameWhenShown) {
 		const node = tabNodes.get(renameWhenShown);
 		if (!node) { renameWhenShown = undefined; }
-		else if (frontId === renameWhenShown && !node.root.classList.contains('overflowed')) {
+		else if (frontId === renameWhenShown && !tabOffStrip(node.root)) {
 			renameWhenShown = undefined;
 			startRename(node);
 		}
@@ -4071,10 +4396,55 @@ function renderTabs(s: ChatViewState): void {
 	}
 }
 
+/**
+ * The row's tabs, add buttons and list button, without the project headings: the strip logic
+ * counts positions among these, and a heading in between must not shift them.
+ */
+function rowItems(): Element[] {
+	return [...tabRow.children].filter(child => !child.classList.contains('project-head'));
+}
+
+/**
+ * The wide drawer's project headings. Each sits in the DOM just before its group's first tab, so
+ * Tab walks heading, tabs, next heading in the order they are drawn; CSS `order` places them as
+ * well. Moving a heading never moves a tab, so no tab's width transition is cut short.
+ */
+function renderProjectHeads(byProject: boolean, groups: readonly ProjectGroup<StripTab>[], terminals: readonly StripTab[], adds: readonly HTMLElement[]): void {
+	let order = 0;
+	const wanted = new Set<string>();
+	tabRow.classList.toggle('grouped', byProject);
+	const place = (root: HTMLElement) => { root.classList.toggle('first', order === 0); root.style.order = String(order++); };
+	const before = (head: HTMLElement, first: StripTab | undefined) => {
+		const anchor = first ? tabNodes.get(first.id)?.root ?? null : null;
+		if (anchor ? head.nextElementSibling !== anchor : !head.isConnected) { tabRow.insertBefore(head, anchor); }
+	};
+	for (const g of groups) {
+		if (byProject) {
+			wanted.add(g.id);
+			const head = projectHead(g.id, g.name, { tabs: g.tabs.length, thinking: g.thinking, unread: g.unread, waiting: g.waiting, failed: g.failed });
+			before(head, g.tabs[0]);
+			place(head);
+		}
+		for (const t of g.tabs) { const n = tabNodes.get(t.id); if (n) { place(n.root); } }
+	}
+	if (byProject && terminals.length) {
+		const id = '\u0000terminals';
+		wanted.add(id);
+		const head = projectHead(id, 'Terminals', { tabs: terminals.length, thinking: 0, unread: 0, waiting: 0, failed: 0 });
+		before(head, terminals[0]);
+		place(head);
+	}
+	for (const t of terminals) { const n = tabNodes.get(t.id); if (n) { place(n.root); } }
+	for (const b of [...adds, overflowButton]) { place(b); }
+	for (const [id, head] of projectHeads) {
+		if (!wanted.has(id)) { head.root.remove(); projectHeads.delete(id); }
+	}
+}
+
 function tabWidths(): Map<string, number> {
 	const widths = new Map<string, number>();
 	for (const [id, node] of tabNodes) {
-		if (node.root.isConnected && !node.root.classList.contains('overflowed')) { widths.set(id, node.root.getBoundingClientRect().width); }
+		if (node.root.isConnected && !tabOffStrip(node.root)) { widths.set(id, node.root.getBoundingClientRect().width); }
 	}
 	return widths;
 }
@@ -4090,7 +4460,7 @@ const tabResizeEnds = new WeakMap<HTMLElement, () => void>();
  */
 function animateTabSwitch(before: Map<string, number>, ids: string[]): void {
 	const nodes = ids.map(id => ({ id, root: tabNodes.get(id)?.root }))
-		.filter((n): n is { id: string; root: HTMLElement } => !!n.root?.isConnected && !n.root.classList.contains('overflowed'));
+		.filter((n): n is { id: string; root: HTMLElement } => !!n.root?.isConnected && !tabOffStrip(n.root));
 	// A switch still under way gives up its held widths first, so both are measured free.
 	for (const { root } of nodes) { tabResizeEnds.get(root)?.(); }
 	if (wideChat.matches || matchMedia('(prefers-reduced-motion: reduce)').matches) { return; }
@@ -4132,7 +4502,7 @@ function animateTabSwitch(before: Map<string, number>, ids: string[]): void {
 }
 
 function tabShown(t: StripTab, agent: string | undefined): string {
-	return t.terminal ? terminalTabShown(t.terminal) : JSON.stringify([t.title, t.status, t.agents, t.skillRuns, t.busy, agent, t.model, t.chrome, conversationShown(t)]);
+	return t.terminal ? terminalTabShown(t.terminal) : JSON.stringify([t.title, t.mark, t.status, t.agents, t.skillRuns, t.busy, agent, t.model, t.chrome, conversationShown(t)]);
 }
 
 /**
@@ -4160,7 +4530,8 @@ function tabNode(t: StripTab): TabNode {
 	});
 	/** The tab's context menu, at its label or, for a tab in the overflow dropdown, at its row there (`keep`: the dropdown stays under it). */
 	node.openMenu = (anchor: HTMLElement, keep?: HTMLElement): void => {
-		const overflowed = root.classList.contains('overflowed');
+		// Opened from the tab list (`keep`), a shown tab gets the rows a hidden one does: Rename, Close, its title.
+		const overflowed = tabOffStrip(root) || !!keep;
 		const terminal = node.tab.terminal;
 		if (terminal) {
 			const compact = wideChat.matches && chatDrawerCollapsed;
@@ -4301,19 +4672,21 @@ function fillTab(node: TabNode, agent: string | undefined): void {
 		fillTerminalTab(node, t.terminal, agent);
 		return;
 	}
-	const compactMark = t.status === 'working' || t.status === 'waiting' ? tabMark(t.status)
+	// A tab's label (its one emoji) stands in for the status icon in the collapsed rail; the status moves to the tile's border (`.labelled`).
+	const compactMark = t.mark ? el('span', { class: 'tab-compact-label', text: t.mark })
+		: t.status === 'working' || t.status === 'waiting' ? tabMark(t.status)
 		: icon(t.status === 'failed' ? 'error' : t.status === 'read' || t.status === 'unread' ? 'check' : 'comment');
 	compactMark?.removeAttribute('title');
 	// Terminals pinned to this conversation: a terminal icon and their count (editor only; the state has none elsewhere).
 	const badge = conversationBadge(t);
 	const terminalBadge = badge ? el('span', { class: 'tab-terminals', title: badge.title }, icon('terminal'), el('span', { text: String(badge.count) })) : undefined;
-	const compact = el('span', { class: `tab-compact status-${t.status ?? 'new'}` },
+	const compact = el('span', { class: `tab-compact status-${t.status ?? 'new'}${t.mark ? ' labelled' : ''}` },
 		el('span', { class: 'tab-compact-number', text: String(node.compactNumber) }), compactMark);
 	compact.setAttribute('aria-hidden', 'true');
 	const parts: (HTMLElement | undefined)[] = [
 		compact,
 		el('span', { class: 'tab-loading codicon codicon-loading codicon-modifier-spin', title: 'Loading the conversation' }),
-		tabMark(t.status),
+		tabKindMark(t.status),
 		el('span', { class: 'tab-text' },
 			el('span', { class: 'tab-title', text: t.title }),
 			t.model ? el('span', { class: 'tab-model', text: t.model }) : undefined),
@@ -4436,7 +4809,7 @@ function cancelClosing(): void {
 	}
 	if (id) {
 		const node = tabNodes.get(id);
-		(node?.root.classList.contains('overflowed') ? overflowButton : node?.close)?.focus();
+		(node && tabOffStrip(node.root) ? overflowButton : node?.close)?.focus();
 	}
 }
 
@@ -4483,7 +4856,7 @@ function renderTabConfirm(s: ChatViewState): void {
 function placeTabConfirm(): void {
 	const root = closingTab ? tabNodes.get(closingTab)?.root : undefined;
 	// A tab in the overflow dropdown is closed from there: the confirmation goes under its button.
-	const anchor = root?.classList.contains('overflowed') ? overflowButton : root;
+	const anchor = root && tabOffStrip(root) ? overflowButton : root;
 	if (!anchor || tabConfirm.hidden) { return; }
 	const box = app.getBoundingClientRect();
 	const at = anchor.getBoundingClientRect();
@@ -4511,6 +4884,16 @@ const tabMarks: Record<ChatTabStatus, string> = {
 	failed: 'Ended with an error',
 	read: 'Finished',
 };
+
+/**
+ * The chat's own icon, always present so every title starts at the same x (asked for). Its colour
+ * carries the status: green while the agent thinks or works, the warning colour while it waits for
+ * an answer, the theme's blue when a finished chat is unread, orange on failure, dim otherwise.
+ */
+function tabKindMark(status: ChatTabStatus | undefined): HTMLElement {
+	const name = status === 'failed' ? 'error' : status === 'unread' ? 'check' : 'comment';
+	return el('span', { class: `tab-kind status-${status ?? 'new'}`, title: status ? tabMarks[status] : 'New chat' }, icon(name));
+}
 
 function tabMark(status: ChatTabStatus | undefined): HTMLElement | undefined {
 	// Finished and read needs no mark at all — asked for: the grey square it
@@ -5112,7 +5495,13 @@ function renderSummary(box: HTMLElement, s: ChatViewState, turn: Turn, last: boo
 	}
 	// The latest piece of work, while the turn runs and its work is folded.
 	const latest = running && !open ? work[work.length - 1] : undefined;
-	const sig = latest ? JSON.stringify(latest.kind === 'thinking' ? [latest.kind, latest.endedAt === undefined] : latest) : '';
+	// Kept for the click, read when it lands: the line itself is rebuilt only
+	// when what it shows changes, not on every chunk of a command's output,
+	// or a press straddling a rebuild loses the click (#365, #410).
+	summaryLatest.set(box, latest);
+	const sig = latest ? JSON.stringify(latest.kind === 'thinking' ? [latest.kind, latest.endedAt === undefined]
+		: latest.kind === 'tool' ? [latest.id, latest.tool, latest.status, latest.name, latest.detail, latest.added, latest.removed, opensDetails(latest)]
+			: latest) : '';
 	if (box.dataset.sig === sig) {
 		return;
 	}
@@ -5132,11 +5521,65 @@ function renderSummary(box: HTMLElement, s: ChatViewState, turn: Turn, last: boo
 	} else if (latest.kind === 'approval') {
 		now.append(icon('shield', 'tool-icon'), el('span', { text: latest.title }));
 	}
-	// The file name in a title is a link elsewhere; here the line is only a label.
+	// The file name in a title is a link of its own elsewhere; here the whole
+	// line is one target, opening what the unfolded row would show (asked for).
 	for (const link of now.querySelectorAll('.file-link')) {
 		link.classList.remove('file-link');
 	}
+	if (latest.kind === 'tool' && opensDetails(latest)) {
+		now.classList.add('opens');
+		now.title = latest.tool === 'edit' ? 'Click to open the change in the diff editor'
+			: latest.tool === 'agent' ? 'Click to open this agent' : 'Click to open in an editor tab';
+		onPlainClick(now, now.title, () => {
+			const current = summaryLatest.get(box);
+			if (current?.kind === 'tool') {
+				openToolDetails(current);
+			}
+		});
+	}
 	box.append(now);
+}
+
+/** The work a turn's summary line names now, by its box: read when a click lands. */
+const summaryLatest = new WeakMap<HTMLElement, ChatEntry | undefined>();
+
+/** Whether a tool call has anything a click could open — see `openToolDetails`. */
+function opensDetails(t: ToolEntry): boolean {
+	return t.tool === 'agent' || t.tool === 'edit' && !!t.input || !!fileOf(t) || !!(t.input || t.output);
+}
+
+/** The file a tool's title names, as its file link carries it. */
+function fileOf(t: ToolEntry): string | undefined {
+	return el('span', {}, ...toolTitle(t)).querySelector<HTMLElement>('.file-link')?.dataset.file;
+}
+
+/**
+ * Opens what the unfolded row of `t` shows, in a tab of VS Code: an edit's
+ * change in the diff editor, a file read in the editor, an agent's card, a
+ * command or a tool's input and output as text.
+ */
+function openToolDetails(t: ToolEntry): void {
+	if (t.tool === 'agent') {
+		openAgentCard(t.id);
+		return;
+	}
+	if (t.tool === 'edit' && t.input) {
+		post({ type: 'openDiff', name: t.detail ?? 'Changes', diff: t.input });
+		return;
+	}
+	const file = fileOf(t);
+	if (file && (t.tool === 'read' || !t.output)) {
+		post({ type: 'openFile', path: file });
+		return;
+	}
+	const text = t.tool === 'command'
+		? [t.input && `$ ${t.input}`, t.output].filter(Boolean).join('\n\n')
+		: [t.input && `IN\n${t.input}`, t.output && `OUT\n${t.output}`].filter(Boolean).join('\n\n');
+	if (text) {
+		post({ type: 'openText', name: t.name, text });
+	} else if (file) {
+		post({ type: 'openFile', path: file });
+	}
 }
 
 /** The line under a turn: the live "Working…" while it runs, "Worked for …" once it is done. */
@@ -10129,13 +10572,11 @@ slashButton.addEventListener('click', () => {
 /* ---------------------------------------------------------------- the working folder */
 
 /**
- * The folder button, right of "/": where the tab's agent works, and the files
- * of that folder to add to the message — asked for. A search box at the top,
- * focused at once, as in the "/" palette; under it the folders to work in (the
- * one in use, the window's own, those picked lately, and Choose folder…),
- * then the files and folders of the one in use. Without a search the files
- * are the folder's own entries; with one, the best matches from anywhere in
- * it (`searchPaths`). A file or folder chosen is attached as its path.
+ * The folder button, right of "/": where the tab's agent works, and GitHub. A
+ * search box at the top, focused at once, as in the "/" palette; under it the
+ * folders to work in (the one in use, the window's own, those picked lately,
+ * and Choose folder…), then the GitHub rows. It used to list the folder's
+ * files to attach as well; removed on request — the Files tab and "+" do that.
  *
  * A conversation that has started keeps its folder: another one opens a new
  * tab (`StoredChat.folder`), and the rows say so.
@@ -10150,29 +10591,16 @@ interface WorkdirItem {
 	readonly run: () => void;
 }
 
-/** Results shown at most for a search; the listing itself can be 20 000 long. */
-const workdirResultLimit = 100;
-/** The working folder's listing, as the host last sent it. */
-const workdirListings = new Map<string, { entries: readonly string[]; truncated: boolean; revision: number }>();
-/** Counts the listings that arrived, so one with the same number of entries still rebuilds the list. */
-let workdirRevision = 0;
-
-/** The listing of the folder in use, when one has arrived. */
-function currentListing(s: ChatViewState) {
-	return s.workdir.current ? workdirListings.get(s.workdir.current.path) : undefined;
-}
 let workdirItems: WorkdirItem[] = [];
 let workdirActive = 0;
 /** What the list was built from: a state post rebuilds it only when that changed (#365). */
 let workdirShape = '';
-/** The folder whose files were last asked for while the list is open. */
-let workdirAsked: string | undefined;
 
 const workdirSearch = el('input', { class: 'palette-search' });
 workdirSearch.type = 'text';
 workdirSearch.spellcheck = false;
-workdirSearch.placeholder = 'Search folders and files…';
-workdirSearch.setAttribute('aria-label', 'Search folders and files');
+workdirSearch.placeholder = 'Search folders and repositories…';
+workdirSearch.setAttribute('aria-label', 'Search folders and repositories');
 const workdirList = el('div', { class: 'palette-list' });
 workdirList.setAttribute('role', 'listbox');
 workdirPopup.append(clearableSearch(workdirSearch), workdirList);
@@ -10227,24 +10655,7 @@ function workdirItemsFor(s: ChatViewState, query: string): WorkdirItem[] {
 		detail: `Any folder on this machine${move}`, run: () => post({ type: 'chooseWorkdir' }),
 	});
 	items.push(...githubItems(w, move));
-	const folders = query ? items.filter(i => i.key === 'folder:choose' || i.key === 'github:open' || [i.label, i.detail].join(' ').toLowerCase().includes(query)) : items;
-
-	const files: WorkdirItem[] = [];
-	const listing = currentListing(s);
-	if (w.current && listing) {
-		const filesGroup = `Files in ${w.current.name}`;
-		for (const entry of searchPaths(listing.entries, query, workdirResultLimit)) {
-			const isDir = entry.endsWith('/');
-			const parent = entry.slice(0, entry.length - baseName(entry).length - (isDir ? 1 : 0));
-			files.push({
-				key: `file:${entry}`, group: filesGroup, label: isDir ? `${baseName(entry)}/` : baseName(entry),
-				icon: isDir ? 'folder' : 'file', detail: parent ? parent.replace(/\/$/, '') : undefined,
-				run: () => post({ type: 'attachPath', path: entry }),
-			});
-		}
-	}
-	// With a search, the files first: the folders are a handful and rarely what is typed for.
-	return query ? [...files, ...folders] : [...folders, ...files];
+	return query ? items.filter(i => i.key === 'folder:choose' || i.key === 'github:open' || [i.label, i.detail].join(' ').toLowerCase().includes(query)) : items;
 }
 
 /**
@@ -10389,54 +10800,20 @@ function openRepoForm(repo: string): void {
 	(repo ? branchInput : repoInput).focus();
 }
 
-/** What the list says under the files when it has no files to show. */
-function workdirStatus(s: ChatViewState, query: string, shown: number): string | undefined {
-	const current = s.workdir.current;
-	if (!current) {
-		return 'No folder in use — choose one to see its files.';
-	}
-	const listing = currentListing(s);
-	if (!listing) {
-		return 'Listing the files…';
-	}
-	if (!listing.entries.length) {
-		return 'The folder is empty, or could not be read.';
-	}
-	if (query && !shown) {
-		return 'No file matches.';
-	}
-	if (listing.truncated) {
-		return `Only the first ${listing.entries.length.toLocaleString()} files are listed; the search looks among them.`;
-	}
-	return undefined;
-}
-
 function buildWorkdir(s: ChatViewState): void {
 	const query = workdirSearch.value.trim().toLowerCase();
 	workdirItems = workdirItemsFor(s, query);
 	// Kept only when picked with an arrow key, and only while the search is the
 	// one it was picked in. A row chosen by the first letters, or under a
-	// pointer passing by, outlived the typing: Enter then attached that file
-	// over the best match, or moved the conversation to a folder row (#412's
-	// lesson, here).
+	// pointer passing by, outlived the typing (#412's lesson, here).
 	const kept = workdirArrowed && workdirArrowed.query === query ? workdirItems.findIndex(i => i.key === workdirArrowed!.key) : -1;
-	// With a search the best file is chosen; without one, nothing — Enter on a
-	// fresh list must not move the conversation to another folder.
-	// With a search only a file is chosen by default: a folder row chosen that
-	// way moved the conversation, or opened Choose folder…, on a typo and Enter.
-	workdirActive = kept >= 0 ? kept : query && workdirItems[0]?.key.startsWith('file:') ? 0 : -1;
+	// Nothing is chosen by default: a row chosen that way moved the
+	// conversation, or opened Choose folder…, on a typo and Enter (#441).
+	workdirActive = kept >= 0 ? kept : -1;
 	const nodes: Node[] = [];
 	let group: string | undefined;
-	const files = workdirItems.filter(i => i.key.startsWith('file:')).length;
-	let status = workdirStatus(s, query, files);
 	workdirItems.forEach((item, index) => {
 		if (item.group !== group) {
-			// Without a search the status goes where the files would be, after the
-			// folders (a cut listing's note before its files); with one, at the end.
-			if (group === 'GitHub' && !query && status) {
-				nodes.push(el('div', { class: 'palette-empty', text: status }));
-				status = undefined;
-			}
 			group = item.group;
 			nodes.push(el('div', { class: 'palette-group', text: group }));
 		}
@@ -10455,8 +10832,8 @@ function buildWorkdir(s: ChatViewState): void {
 		row.addEventListener('click', () => chooseWorkdirItem(index));
 		nodes.push(row);
 	});
-	if (status) {
-		nodes.push(el('div', { class: 'palette-empty', text: status }));
+	if (!workdirItems.length) {
+		nodes.push(el('div', { class: 'palette-empty', text: 'Nothing matches.' }));
 	}
 	workdirList.replaceChildren(...nodes);
 	setWorkdirActive(workdirActive, true);
@@ -10530,8 +10907,8 @@ function renderWorkdir(s: ChatViewState): void {
 	commitFix.disabled = !modelAvailable || s.running;
 	commitFix.title = `Ask ${s.selection.model ?? 'the current model'} to diagnose and fix this commit error`;
 	workdirButton.title = w.current
-		? `Working folder: ${w.current.path}${w.picked ? '' : " (this window's)"} — where the agent works, and its files to add to the message`
-		: 'Working folder: none, the home directory — choose a folder for the agent to work in, and its files to add to the message';
+		? `Working folder: ${w.current.path}${w.picked ? '' : " (this window's)"} — where the agent works`
+		: 'Working folder: none, the home directory — choose a folder for the agent to work in';
 	workdirButton.classList.toggle('picked', w.picked);
 	const currentProject = !w.copy && !w.noProject && !!w.current && w.workspace.some(folder => folder.path === w.current?.path);
 	const mode = w.copy ? 'Git' : w.noProject || !w.current ? 'Home' : currentProject ? '' : 'Ext';
@@ -10555,7 +10932,7 @@ function renderWorkdir(s: ChatViewState): void {
 	if (!workdirPopup.classList.contains('open')) {
 		return;
 	}
-	const shape = JSON.stringify([w, workdirSearch.value, currentListing(s)?.revision]);
+	const shape = JSON.stringify([w, workdirSearch.value]);
 	// Not under a press: a listing arriving between a press and its release
 	// rebuilt the rows and lost the click (#365). Rebuilt when the press ends.
 	if (workdirPressed) {
@@ -10563,12 +10940,6 @@ function renderWorkdir(s: ChatViewState): void {
 	}
 	if (shape === workdirShape) {
 		return;
-	}
-	// A folder moved to while the list is open — another tab, Choose folder…:
-	// its files are asked for.
-	if (w.current && w.current.path !== workdirAsked) {
-		workdirAsked = w.current.path;
-		post({ type: 'listWorkdir' });
 	}
 	workdirShape = shape;
 	buildWorkdir(s);
@@ -10583,9 +10954,6 @@ function openWorkdir(): void {
 	workdirShape = '';
 	workdirActive = -1;
 	openAbove(workdirPopup, workdirButton, 'left');
-	// Asked every time it opens: files come and go while a message is written.
-	workdirAsked = state.workdir.current?.path;
-	post({ type: 'listWorkdir' });
 	renderWorkdir(state);
 	workdirSearch.focus();
 }
@@ -12018,6 +12386,9 @@ function agentsShape(agents: ToolEntry[]): string {
 }
 
 let agentsShown = '';
+/** Newest agents the Agents panel lists; "Show more" at the foot raises it per chat (`composerListStep`). */
+let agentsListShown = composerListStep;
+let agentsListChat = '';
 let agentsPending = false;
 let agentsPointer = false;
 let agentsTimer: ReturnType<typeof setInterval> | undefined;
@@ -12069,7 +12440,8 @@ function fillAgents(agents: ToolEntry[], force = false): void {
 		}
 		refreshAgentsLive(currentAgents());
 	}, 1000);
-	const shape = agentsShape(agents);
+	if ((state?.chatId ?? '') !== agentsListChat) { agentsListChat = state?.chatId ?? ''; agentsListShown = composerListStep; }
+	const shape = `${agentsShape(agents)}|${agentsListShown}`;
 	if (!force && shape === agentsShown) {
 		refreshAgentsLive(agents);
 		return;
@@ -12100,7 +12472,8 @@ function fillAgents(agents: ToolEntry[], force = false): void {
 		const running = agents.filter(a => a.status === 'running').length;
 		const list = el('div', { class: 'history-list' },
 			el('div', { class: 'agents-sub', text: `${agents.length} agent${agents.length === 1 ? '' : 's'}${running ? ` · ${running} running` : ''} · click an agent for details` }));
-		for (const a of [...agents].reverse()) {
+		const newest = [...agents].reverse();
+		for (const a of newest.slice(0, agentsListShown)) {
 			const row = button([
 				el('span', { class: `agent-dot ${a.status}` }),
 				...(a.agent?.type === 'workflow' ? [icon('type-hierarchy-sub', 'agent-kind')] : []),
@@ -12116,6 +12489,9 @@ function fillAgents(agents: ToolEntry[], force = false): void {
 				fillAgents(currentAgents(), true);
 			});
 			list.append(a.status === 'running' ? el('div', { class: 'agent-item' }, row, stopButton(a)) : row);
+		}
+		if (newest.length > agentsListShown) {
+			list.append(showMoreRow(newest.length, agentsListShown, () => { agentsListShown += composerListStep; fillAgents(currentAgents(), true); }));
 		}
 		agentsPanel.replaceChildren(head, list, panelFooter());
 		restore();

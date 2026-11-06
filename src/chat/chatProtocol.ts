@@ -865,6 +865,11 @@ export interface ChatTabSummary {
 	readonly id: string;
 	readonly chatId: string;
 	readonly title: string;
+	/**
+	 * The project the tab is grouped under: its working folder, or the repository of a
+	 * separate copy (`tabProject`). A hash and a short name, never the path.
+	 */
+	readonly project?: { readonly id: string; readonly name: string };
 	/** The emoji leading `title`, if the user put one on the tab. */
 	readonly mark?: string;
 	/** Absent while the conversation has not started, and so belongs to no agent yet. */

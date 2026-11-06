@@ -48,6 +48,7 @@ function fixture(agent: 'codex' | 'claude' = 'codex') {
 	};
 	const tab = new ChatTab(host, newChat(agent));
 	Reflect.set(tab, '_session', session);
+	Reflect.set(tab, '_sessionOpenedAt', Date.now());
 	const consume = Reflect.get(tab, '_onAgentEvent') as (event: AgentEvent) => void;
 	const event = (event: AgentEvent) => {
 		if (event.type === 'turnEnd') { session.running = false; }
@@ -377,4 +378,71 @@ test('Codex session closing settles an idle shell without waiting for a parent t
 	assert.ok(row?.kind === 'tool' && row.status === 'running');
 	f.tab.close();
 	assert.equal(row.status, 'stopped');
+});
+
+test('a quiet tab lets its CLI go an hour after all activity ended', async () => {
+	const hour = 60 * 60_000;
+	const f = fixture('claude'); await f.start();
+	const t0 = Date.now();
+	assert.equal(f.tab.releaseIfIdle(t0 + 2 * hour), false, 'a turn is running');
+	f.end();
+	// The turn was still running two hours in: the hour counts from there.
+	assert.equal(f.tab.releaseIfIdle(t0 + 2 * hour + 30 * 60_000), false, 'not an hour since the work ended');
+	f.tab.chat.entries.push({ kind: 'tool', id: 'bg', tool: 'agent', title: 'Background agent', status: 'running' } as never);
+	assert.equal(f.tab.releaseIfIdle(t0 + 4 * hour), false, 'a background agent lives inside the CLI');
+	f.tab.chat.entries.pop();
+	assert.equal(f.tab.releaseIfIdle(t0 + 4 * hour + 30 * 60_000), false, 'counted from when the agent was last seen running');
+	assert.equal(f.tab.releaseIfIdle(t0 + 6 * hour, true), false, 'a toolbar run or a worker chat is still at work');
+	assert.equal(f.tab.releaseIfIdle(t0 + 7 * hour - 60_000), false);
+	assert.equal(f.tab.releaseIfIdle(t0 + 7 * hour + 1000), true);
+	assert.equal(Reflect.get(f.tab, '_session'), undefined, 'the next message opens a session again');
+	assert.equal(f.tab.releaseIfIdle(t0 + 9 * hour), false, 'nothing left to let go');
+});
+
+test('a tab whose agent scheduled itself keeps its CLI', async () => {
+	const hour = 60 * 60_000;
+	const f = fixture('claude'); await f.start();
+	f.end();
+	const t0 = Date.now();
+	const tool = (id: string, name: string, input: unknown, output = '', at = t0) =>
+		f.tab.chat.entries.push({ kind: 'tool', id, tool: 'other', name, input: JSON.stringify(input), output, status: 'done', startedAt: at, endedAt: at } as never);
+	tool('w', 'ScheduleWakeup', { delaySeconds: 1800 });
+	assert.equal(f.tab.releaseIfIdle(t0 + hour + 10 * 60_000), false, 'the hour counts from the wake-up');
+	tool('c', 'CronCreate', { cron: '0 9 * * *' }, 'Scheduled job job-42a');
+	assert.equal(f.tab.releaseIfIdle(t0 + 5 * hour), false, 'a cron lives inside the CLI');
+	tool('d', 'CronDelete', { id: 'job-42a' }, '', t0 + 5 * hour);
+	assert.equal(f.tab.releaseIfIdle(t0 + 6 * hour - 60_000), false, 'counted from when the cron was last held');
+	assert.equal(f.tab.releaseIfIdle(t0 + 6 * hour + 1000), true);
+});
+
+test('a session cron holds the CLI for at most seven days', async () => {
+	const f = fixture('claude'); await f.start();
+	f.end();
+	const t0 = Date.now();
+	f.tab.chat.entries.push({ kind: 'tool', id: 'c', tool: 'other', name: 'CronCreate', input: '{}', output: 'ok', status: 'done', startedAt: t0, endedAt: t0 } as never);
+	assert.equal(f.tab.releaseIfIdle(t0 + 6 * 24 * 60 * 60_000), false);
+	assert.equal(f.tab.releaseIfIdle(t0 + 8 * 24 * 60 * 60_000), true);
+});
+
+test('a cron set by an earlier process does not hold a new one', async () => {
+	const hour = 60 * 60_000;
+	const f = fixture('claude'); await f.start();
+	f.end();
+	// Set an hour before this session opened: a reloaded window's history.
+	const before = Date.now() - 2 * hour;
+	f.tab.chat.entries.push({ kind: 'tool', id: 'c', tool: 'other', name: 'CronCreate', input: '{}', output: 'ok', status: 'done', startedAt: before, endedAt: before } as never);
+	const t0 = Date.now();
+	assert.equal(f.tab.releaseIfIdle(t0 + hour + 1000), true, 'the cron went with the process that set it');
+});
+
+test('a cron set before the CLI restarted does not hold the new process', async () => {
+	const hour = 60 * 60_000;
+	const f = fixture('claude'); await f.start();
+	f.end();
+	const before = Date.now() - 1000;
+	f.tab.chat.entries.push({ kind: 'tool', id: 'c', tool: 'other', name: 'CronCreate', input: '{}', output: 'ok', status: 'done', startedAt: before, endedAt: before } as never);
+	// A model, effort or Ultracode change starts another process in the same session.
+	f.event({ type: 'processStarted' });
+	const t0 = Date.now();
+	assert.equal(f.tab.releaseIfIdle(t0 + hour + 1000), true, 'the cron went with the process that was replaced');
 });

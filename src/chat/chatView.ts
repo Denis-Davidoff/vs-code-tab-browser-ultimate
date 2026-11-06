@@ -17,7 +17,7 @@ import { annotationPointContext } from '../browser/annotationData';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { chromeChatCommandFeature } from './chromeChatCompatibility';
 import { ChatPanelCatalog } from './chatPanelCatalog';
-import { chatProjectId, legacyProjectTabs, type SavedChatTabs } from './chatProject';
+import { chatProjectId, legacyProjectTabs, tabProject, type SavedChatTabs } from './chatProject';
 import { ChatStateSurfaces, type ChatStateSurface } from './chatSurface';
 import { SessionHost } from './core/sessionHost';
 import type { ChromeElementAttachment } from './chromeChatProtocol';
@@ -903,6 +903,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			for (const [id, draft] of Object.entries(this._services.panels.panels.get(_restoredPanel.id)?.drafts ?? {})) { this._savedDrafts.set(id, draft); }
 		}
 		this._subscriptions.push(exchangeConnection.onDidChange(() => this._post()));
+		// A tab nobody wrote in for an hour lets its CLI go (`ChatTab.releaseIfIdle`);
+		// its next message resumes the conversation by `ref`.
+		const idleSweep = setInterval(() => {
+			const all = [...ChatViewProvider._surfaces.values()].flatMap(surface => surface._tabs);
+			for (const tab of this._tabs) {
+				const id = tab.chat.id;
+				tab.releaseIfIdle(Date.now(), this._runs.runningIn(id) > 0 || all.some(other => other !== tab && other.chat.managed?.ownerChatId === id && other.busy));
+			}
+		}, 5 * 60_000);
+		this._subscriptions.push(new vscode.Disposable(() => clearInterval(idleSweep)));
 		let processShape = '';
 		this._subscriptions.push(agentProcesses.subscribe(() => {
 			// A small editor-only event: no full state, history save, bridge broadcast or hidden-view queue.
@@ -1431,6 +1441,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			tabs: this._tabs.map((tab): ChatTabSummary => ({
 				id: tab.id,
 				chatId: tab.chat.id,
+				project: tabProject(tab.cwd, tab.chat.copy?.repo, tab.projectRoot === undefined && isHome(tab.cwd)),
 				canResumeInTerminal: !!tab.chat.ref,
 				mark: tab.chat.mark,
 				title: tab.title ?? vscode.l10n.t("New chat"),
@@ -1786,6 +1797,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				await this._restoreBranchStash(message.folder);
 				return;
 			case 'refreshWorkdirGit':
+				// The view's 15 s poll keeps running while the side bar is collapsed or
+				// a chat panel sits behind another editor. Git (and a fetch every two
+				// minutes) runs only for a view on screen: a hidden one is answered from
+				// the last read and read again when it is shown (`_gitStale`). With
+				// nothing read yet for the folder it is read now, or its refresh button
+				// stays disabled.
+				if (message.fetch !== 'force' && this._view && !this._view.visible && !this._stateSurfaces.watching() && !this._chromeCommand?.getStore()) {
+					const last = this._lastWorkdirGit.get(this._workdir() ?? '');
+					if (last) {
+						this._gitStale = true;
+						this._postMessage(last);
+						return;
+					}
+				}
 				await this._refreshWorkdirGit(message.fetch);
 				return;
 			case 'listWorkdir':
@@ -5618,6 +5643,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	 * it — which is what a caller that has just changed the index needs — and
 	 * is answered when that rerun is done.
 	 */
+	/** The last successful footer read per folder, for answering a hidden view's poll without running Git. */
+	private readonly _lastWorkdirGit = new Map<string, Extract<HostToView, { type: 'workdirGit' }>>();
+
 	private _refreshWorkdirGit(fetch?: 'auto' | 'force'): Promise<void> {
 		// Only for a view that can show it: the answer is not queued (see
 		// `_postMessage`), and `ready` asks for a fresh one.
@@ -5886,9 +5914,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._runWorkdirGit(git, ['config', '--get-regexp', '^remote\\..*\\.url$'], folder, 15_000).catch(() => ''),
 			]);
 			const status = parseGitStatus(output);
-			const decorated = this._view && !this._chromeCommand?.getStore() ? await themedGitFiles(status, this._view.webview, vscode.Uri.joinPath(this._context.extensionUri, 'media'), vscode.Uri.file(folder)) : status;
+			const forView = !!this._view && !this._chromeCommand?.getStore();
+			const decorated = this._view && forView ? await themedGitFiles(status, this._view.webview, vscode.Uri.joinPath(this._context.extensionUri, 'media'), vscode.Uri.file(folder)) : status;
 			const branches = parseGitBranches(current, refs, urls);
-			this._postMessage({ type: 'workdirGit', folder, status: decorated, branches: { ...branches, ...this._pullRequestFor(branches), savedStash: this._branchStashes.get(folder)?.at(-1) }, ...(fetchError ? { fetchError } : {}) });
+			const answer: Extract<HostToView, { type: 'workdirGit' }> = { type: 'workdirGit', folder, status: decorated, branches: { ...branches, ...this._pullRequestFor(branches), savedStash: this._branchStashes.get(folder)?.at(-1) } };
+			// Only the editor view's own read is kept: Chrome's carries no themed file
+			// icons, and a hidden view answered from it would lose them.
+			if (forView) {
+				this._lastWorkdirGit.delete(folder);
+				if (this._lastWorkdirGit.size >= 16) { this._lastWorkdirGit.delete(this._lastWorkdirGit.keys().next().value!); }
+				this._lastWorkdirGit.set(folder, answer);
+			}
+			this._postMessage(fetchError ? { ...answer, fetchError } : answer);
 		} catch (error) {
 			this._postMessage({ type: 'workdirGit', folder, error: error instanceof Error ? error.message : String(error) });
 		}
@@ -7500,6 +7537,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 
 	/** A new tab beside the one in front, and in front; refused past `tabLimit()`. */
 	/** `beside`: the tab it is opened next to and takes its folder from; the one in front unless said. */
+	/** The project a tab belongs to, as the strip groups it (`ChatTabSummary.project`). */
+	private _tabProjectId(tab: ChatTab): string {
+		return tabProject(tab.cwd, tab.chat.copy?.repo, tab.projectRoot === undefined && isHome(tab.cwd)).id;
+	}
+
 	private _addTab(agent: AgentId, beside: ChatTab = this._chromeCommand?.getStore()?.tab ?? this._active): ChatTab | undefined {
 		if (this._tabs.length >= tabLimit()) {
 			refuse(vscode.l10n.t("{0} chats are open — close one to open another.", this._tabs.length));
@@ -7929,8 +7971,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		}
 		const agent = requestedAgent ?? this._remembered.agent ?? this._selection().agent ?? 'claude';
 		if (location === 'here') {
-			// Reuse a conversation with no sent messages instead of accumulating empty tabs.
-			const empty = this._tabs.find(tab => !tab.started && (!requestedAgent || tab.chat.agent === requestedAgent));
+			// Reuse a conversation with no sent messages instead of accumulating empty
+			// tabs — one per project: the new tab would open in the project of the tab
+			// beside it, so only an empty tab of that project stands in for it.
+			const beside = this._chromeCommand?.getStore()?.tab ?? this._active;
+			const where = this._tabProjectId(beside);
+			const empty = this._tabs.find(tab => !tab.started && (!requestedAgent || tab.chat.agent === requestedAgent) && this._tabProjectId(tab) === where);
 			if (empty) {
 				this._selectTab(empty.id);
 				this._postMessage({ type: 'flashTab', id: empty.id });

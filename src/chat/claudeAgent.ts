@@ -633,6 +633,7 @@ class ClaudeSession implements AgentSession {
 		);
 		this._launched = { model, effort, ultracode };
 		this._processCost = this._sessionId ? this._sessionCost : 0;
+		this._onEvent.fire({ type: 'processStarted' });
 
 		process.onMessage(message => {
 			if (process !== this._process) {

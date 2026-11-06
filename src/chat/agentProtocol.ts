@@ -572,6 +572,8 @@ export type AgentEvent =
 	| { readonly type: 'agentStates'; readonly states: readonly { readonly threadId: string; readonly status: 'running' | 'done' | 'failed' | 'stopped'; readonly message?: string }[] }
 	/** Claude Code began a turn of its own — an agent it started has finished, and it is answering that. */
 	| { readonly type: 'autoTurn' }
+	/** A new CLI process took over the session (a model, effort or Ultracode change, a restart): timers the old one held went with it. */
+	| { readonly type: 'processStarted' }
 	| { readonly type: 'session'; readonly id: string }
 	| { readonly type: 'turnEnd'; readonly error?: string; readonly tooLong?: boolean; readonly interrupted?: boolean }
 	/** `models`: the models that actually answered the turn, when they are not the one picked (Gemini's Auto). */

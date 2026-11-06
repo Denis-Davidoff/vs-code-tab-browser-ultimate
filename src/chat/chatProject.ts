@@ -32,3 +32,20 @@ export function legacyProjectTabs(saved: SavedChatTabs | undefined, project: str
 	const ids = (Array.isArray(saved.ids) ? saved.ids : []).filter((id): id is string => typeof id === 'string');
 	return { ...saved, project, ids, active: ids.includes(saved.active as string) ? saved.active : undefined };
 }
+
+/**
+ * The project a conversation's tab is grouped under in the strip, the drawer and
+ * the tab list (`ChatTabSummary.project`): its working folder, or for a separate
+ * copy of a GitHub repository the repository, so every copy of one repository
+ * reads as one project. The id is a hash, never the path: the summary goes to
+ * Chrome and the website too. The home directory is no project.
+ */
+export function tabProject(folder: string, copyRepo: string | undefined, home: boolean): { readonly id: string; readonly name: string } {
+	if (copyRepo) {
+		return { id: createHash('sha1').update(`repo:${copyRepo.toLowerCase()}`).digest('hex').slice(0, 12), name: copyRepo.split('/').pop() || copyRepo };
+	}
+	if (home) { return { id: 'home', name: 'Home' }; }
+	const trimmed = folder.replace(/[\\/]+$/, '');
+	const name = trimmed.split(/[\\/]/).filter(Boolean).pop() || trimmed || folder;
+	return { id: createHash('sha1').update(`folder:${trimmed}`).digest('hex').slice(0, 12), name };
+}

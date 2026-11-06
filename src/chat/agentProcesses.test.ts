@@ -196,3 +196,17 @@ test('only lines about tools, tasks and turn ends wake the monitor', async () =>
 	assert.equal(startsOrEndsWork({ method: 'session/update', params: { update: { sessionUpdate: 'tool_call' } } }), true);
 	assert.equal(startsOrEndsWork({ type: 'tool_execution_start' }), true);
 });
+
+test('a listed process reports when it was born, not when the monitor first saw it', async () => {
+	const f = fixture(); const marker = f.owner('a');
+	f.monitor.register(100, marker);
+	f.advance(90_000); // first sample 90 s after the processes started
+	const late = 'Mon Nov 2 13:00:00 2026'; // after the first sighting: not believed
+	f.rows([row(100, 1), row(200, 100), row(300, 100, { birth: late }), row(400, 100, { birth: 'garbage' })]);
+	await f.monitor.refresh(); const seen = Date.parse(birth) + 90_000;
+	f.advance(); await f.monitor.refresh();
+	const at = new Map(f.monitor.forChat('a').processes.map(item => [item.pid, item.startedAt]));
+	assert.equal(at.get(200), Date.parse(birth));
+	assert.equal(at.get(300), seen);
+	assert.equal(at.get(400), seen);
+});

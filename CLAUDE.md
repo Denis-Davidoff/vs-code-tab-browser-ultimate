@@ -255,6 +255,7 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/translate/translate.ts](src/translate/translate.ts) — Translate Page: the tab, the language picker, the prompt on the clipboard
 - [src/translate/translateText.ts](src/translate/translateText.ts) — languages, the prompt, checks on what the assistant writes back (leaf, under test)
 - [src/translate/translateScript.ts](src/translate/translateScript.ts) — the page-side translator behind `browser_text_segments` / `browser_replace_text`
+- [preview-src/tabProjects.ts](preview-src/tabProjects.ts) — chat tabs grouped by project for the bar, the drawer and the tab list (leaf, under test)
 - [src/chat/chatView.ts](src/chat/chatView.ts) — the AI Browser chat: the webview view, its tabs, history, attachments, usage, switching agents
 - [src/chat/chatTab.ts](src/chat/chatTab.ts) — one conversation of the chat: its session, its turns, its agents
 - [src/chat/toolbarText.ts](src/chat/toolbarText.ts) — toolbar skills as text: what may be stored, parameters filled in, the agent's own sigils, the clipboard result markers (leaf, under test)
@@ -263,8 +264,7 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/chat/diffSides.ts](src/chat/diffSides.ts) — a diff card's text as the before and after VS Code's diff editor compares (leaf, under test)
 - [src/chat/news.ts](src/chat/news.ts) — NEWS.md into the empty chat's introduction and "What's new" (leaf, under test)
 - [src/chat/fileIconTable.ts](src/chat/fileIconTable.ts) — the file icon theme as a lookup table, and which tokens of a message name a file (leaf, under test, read by both builds)
-- [src/chat/workdir.ts](src/chat/workdir.ts) — the working folder's files for the folder button: a walk that reads `.gitignore` (leaf, under test)
-- [preview-src/fileRank.ts](preview-src/fileRank.ts) — searching those files in the view (leaf, under test)
+- [src/chat/workdir.ts](src/chat/workdir.ts) — the working folder's files (`listWorkdir`, answered for older Chrome panels only): a walk that reads `.gitignore` (leaf, under test)
 - [src/chat/githubRepo.ts](src/chat/githubRepo.ts) — a GitHub repository as typed: owner and name, branch names, addresses (leaf, under test)
 - [src/chat/gitExtension.ts](src/chat/gitExtension.ts) — VS Code's Git extension for publish, push and fetch: its askpass signs in to a remote
 - [src/chat/repoWork.ts](src/chat/repoWork.ts) — the git work behind it: the clone in storage, separate copies, read-only checkouts, push
@@ -4775,7 +4775,7 @@ page's words in a Markdown editor make `[x](command:…)` a link that runs a com
 (#371).
 
 **The folder button**, right of "/" (`codicon-folder`), sets where the tab's agent works and
-lists that folder's files to attach — see [The working folder](#the-working-folder).
+opens a GitHub repository — see [The working folder](#the-working-folder).
 
 **Every visible button of the bottom bar has a tooltip** saying what it does, and its key where it
 has one — asked for: Attach, the browser, "/", the agent and model pills, effort, approvals,
@@ -5103,7 +5103,12 @@ every tool call unfolded; **Compact** what Compact on was — every call folded,
   would title it ("Running `npm run lint`", "Thinking", "Read README.md") — and the next replaces
   it; it goes when the turn ends or the turn is opened. **Plain colour, never the shimmer**:
   `background-clip: text` drew nothing inside the line's ellipsis-clipping parent, so only the
-  icon showed (#360's trap, met again in harness). File names there are labels, not links.
+  icon showed (#360's trap, met again in harness). **A click on the line opens what that call's
+  unfolded row would** (asked for; `openToolDetails`, `onPlainClick`'s rules): an edit's change in
+  the diff editor, a read's file, an agent's card, a command or a tool's input and output as a
+  plain-text tab. The line is one target — its file name is not a separate link — and the entry
+  it opens is read at click time (`summaryLatest`), since the line is rebuilt only when its title
+  changes, not on every chunk of output (#410).
 - **The rows are still rendered and hidden by class** (`.turn.minimal-folded .row.background`),
   so opening a turn is instant and keyed rendering is untouched; the timeline's connecting line
   is switched off in a folded turn, where hidden rows left it running to nothing. The summary's
@@ -6170,9 +6175,17 @@ box, grouping, ranking, ↓ Enter, the inline query for both agents, Escape, `/c
 ### The working folder
 
 Asked for: a button right of "/" with a folder on it — a search box at the top, focused at once
-as in the "/" palette, then the folder the agent works in, then the files and folders of that
-folder to add to the message. `workdirPopup` in `chat.ts`; the host's half is the *working
-folder* section of `chatView.ts`.
+as in the "/" palette, then the folder the agent works in, then the GitHub rows. `workdirPopup`
+in `chat.ts`; the host's half is the *working folder* section of `chatView.ts`.
+
+**It no longer lists the folder's files to attach** (removed on request, 2026-11-06: the
+button is for the working folder and GitHub only; the Files tab and "+" attach files). The view
+stops sending `listWorkdir` and ignores `workdirFiles`, and `preview-src/fileRank.ts` went with
+the list. The host still answers `listWorkdir` (`_listWorkdir`, `workdir.ts`) because an older
+Chrome side panel, built from an earlier `chat.ts`, can still send it — the protocol, the command
+table and the Chrome feature list keep it. The bullets below about the walk, `workdirFiles` and
+attaching a chosen path describe that host half; the search and default-row rules now apply to
+the folder and GitHub rows only, and nothing is chosen by default, query or not (#441).
 
 - **Git footer**: beside the working path, the branch dropdown searches local and known remote
   branches, switches or creates a branch, and deletes local branches with `git branch -d`.
@@ -6286,7 +6299,12 @@ folder* section of `chatView.ts`.
   Verified: parsing against a real repository under `npm test`, the build and typecheck. **Not
   run inside VS Code yet**, nor against a real remote.
 - **The footer's Git state is read only for a view on screen, never in a blocked window, and one
-  read at a time.** `git status` runs the repository's own `filter.<driver>.clean` commands from
+  read at a time.** **The view's own 15 s poll (and its fetch every two minutes) is answered from the
+  last read while the view is not visible** — the side bar collapsed, a chat panel behind another
+  editor (`_lastWorkdirGit`, in the `refreshWorkdirGit` case): the webview's `document.hidden`
+  stays false there, so without this Git ran every 15 s for a view nobody saw. It is read again
+  when the view is shown (`_gitStale`); a forced refresh, Chrome and a watching remote surface
+  still read. `git status` runs the repository's own `filter.<driver>.clean` commands from
   `.git/config`, which `core.fsmonitor=false` does not stop, and it used to run on every document
   opened or closed, theme or extension change — in Restricted Mode too, the chat never opened.
   `_readWorkdirGit` refuses where `_blocked()` does (#208) and still answers the view, whose
@@ -6924,7 +6942,24 @@ gives it.
 Lifetimes: a Claude process lives as long as its conversation's tab (closing the tab, replacing
 it with another agent ends it; a chat from the history only ever goes into a tab with nothing
 running) — so five Claude
-tabs are five `claude` processes. The Codex app-server lives while a Codex conversation
+tabs are five `claude` processes. **A tab quiet for an hour lets its CLI go** (asked for: an idle `claude` is
+~200 MB): a sweep every 5 minutes in the provider calls `ChatTab.releaseIfIdle`, which drops the
+session an hour after **all** activity ended — the last message, the last event from the agent,
+and the last sweep that still found work: a turn, retry, waiting prompt, queue, open question, a
+tool row still `running` (a background agent or shell lives inside the CLI), a toolbar skill run
+of that chat, or a chat it created (`managed.ownerChatId`) still busy. Each of those restarts the
+hour rather than merely blocking the release, so the count starts when the last of them stops.
+**A timer the agent set itself counts as work too** (`_scheduledUntil`): Claude Code's
+`ScheduleWakeup` and `CronCreate` are timers inside the `claude` process, and their tool rows end
+at once, so nothing reads as running while ending the process loses the schedule. A wake-up holds
+the tab until it fires (the latest call wins, `stop: true` cancels it); a cron holds it until a
+`CronDelete` names its id (matched against the create's answer, else the oldest goes), for at most
+the 7 days Claude Code keeps a session cron. Only timers set since the tab's session opened count
+(`_sessionOpenedAt`): one from an earlier process — a window reload, a release, or a model, effort or Ultracode change, which restarts the CLI inside the same session and announces it with a `processStarted` event — went with it. A `sleep` in Bash needs none of this: it is a running
+command row. The next message opens a
+session and resumes by `ref`, as after a model change. OpenRouter is left alone: it holds no
+process, and its rebuilt history has no tool results. A sweep, not a timer per tab: the tests
+count a tab's timers as retries. The Codex app-server lives while a Codex conversation
 holds a session, or a detection, a usage read or a skills listing is under way, and **shuts down 30 s after the last
 of them lets go** (`idleShutdownMs`); it is restarted on demand, and a thread loaded in an earlier
 app-server is resumed with `thread/resume` (`CodexSession._loadedIn` against
@@ -7321,14 +7356,22 @@ sidebar with a vertical, scrollable list. Its header toggle collapses it to a 52
 that keeps the tabs as 36 px tiles. A tab keeps its own number and border colour for its
 node lifetime, even after reordering. The center shows a chat icon before work starts,
 the activity spinner while working, a waiting ring for approvals, a check when finished,
-or an error icon; a corner badge counts agents and background skill runs (capped at 99+).
+or an error icon — unless the tab has a label (its one emoji), which takes the icon's place
+(asked for), and the status moves to the tile's border: a 2 px ring (`.labelled::after`, over the
+tab's own border) in green pulsing slowly while working, warning colour pulsing faster
+while an approval waits, steady blue for unread and orange for failed, none when read or new.
+The pulse runs the border between the colour with a glow and a dimmer shade of it with less glow, never fading out (`tile-status-pulse`), not
+its opacity: a fading ring vanished into the active tile's accent-tinted background (asked for);
+reduced motion keeps the colour and stops the pulse; a corner badge counts agents and background skill runs (capped at 99+).
 The active tile has a tinted background and a stronger frame. Titles/statuses remain in
 tooltips and accessible labels. Double-click to rename expands the drawer; the compact
 context menu also offers Close chat, expanding it for any required stop confirmation.
 `ViewState.chatDrawerCollapsed` retains that preference alongside drafts across reloads.
 A footer button moves the sidebar left or right; `ViewState.chatDrawerSide` retains
-its side (left by default). Collapse sits beside Chats, toward the conversation (right in the left sidebar, left in
-the right sidebar). Move left/right stays at the bottom. Both controls remain available
+its side (left by default). The drawer has no title: Collapse stands alone in its header, toward the conversation (right in
+the left sidebar, left in the right sidebar), centred in the collapsed rail. A "Chats" title was removed on request; a
+dangling `.chat-drawer-title,` selector left by an earlier edit had swallowed the media block's closing brace, which is
+what showed the title and pushed the toggle out of the panel. Move left/right stays at the bottom. Both controls remain available
 in the collapsed rail. Move left/right uses an arrow icon; Collapse/Expand uses a chevron pointing toward the window edge to collapse and toward
 the conversation to expand. Both have a
 tooltip and an accessible label describing the current action.
@@ -7354,12 +7397,17 @@ a whole number from 1 up as the default, and 30 for anything above it (#184's ru
 must not take the view down). **Lowering it closes nothing**: the open tabs stay, "+" comes back
 once enough are closed, and only a window restore is cut to the new limit.
 
-**In the narrow strip, tabs that do not fit go into a dropdown** (asked for): `layoutTabOverflow` in
+**In the narrow strip, a tab-list dropdown is always at the right end of the row** (asked for, so every
+tab's whole name can be read at any moment): the `chevron-down` button sits after "+" and New terminal
+(`margin-left: auto`) and lists **every** tab, the one in front marked `current` and focused first, names
+wrapping instead of being cut; it counts the hidden ones ("+N") only while some tabs do not fit, and its room
+is taken off before fitting (`available - overflowWidth`, `overflowWidth: -gap`). A row of a tab already shown
+only selects it; opened from the list, any tab's own menu gets Rename and Close. It is hidden beside the wide
+drawer, which shows titles whole. Tabs that do not fit go into the same dropdown: `layoutTabOverflow` in
 `chat.ts`, the fitting rule in [preview-src/tabOverflow.ts](preview-src/tabOverflow.ts) (leaf, under test).
 The tab in front is always shown, then the others in strip order while they fit at their own width;
-the rest get the class `overflowed` (hidden, never removed — the nodes stay keyed, #365/#383) and a
-`chevron-down +N` button after the last visible tab opens a list of them, each with its mark, agent
-count or terminal icon. A row selects its tab; a right-click, the context-menu key or its `⋯` opens the
+the rest get the class `overflowed` (hidden, never removed — the nodes stay keyed, #365/#383) and the
+button reads `chevron-down +N`; its list shows each tab with its mark, agent count or terminal icon. A row selects its tab; a right-click, the context-menu key or its `⋯` opens the
 tab's own context menu (`TabNode.openMenu`) over the list, which stays open under it (`keep`), with
 Rename and Close added for a hidden tab. Rename selects the tab first and starts once it is shown
 (`renameWhenShown`); a busy tab's close confirmation is placed under the `+N` button. The layout is
@@ -7367,15 +7415,17 @@ measured synchronously in `renderTabs`, before the switch animation measures, wi
 `flex-shrink: 0` (`.tab-row.measuring`) in one frame, so nothing flashes; a `ResizeObserver` on the strip
 re-runs it. **While tabs overflow, the row reads: the tabs still shown, stretched to the full width left of the buttons (`.tab-row.stretched`, removed while `layoutTabOverflow` measures natural widths), then "+" and New terminal, then the `+N` dropdown last — the DOM order is tabs, adds, overflow button. Hovering the `+N` button opens the list at once (hover-capable pointers only, focus stays where it was); it closes 250 ms after the pointer has left both the button and the list, unless a tab's own menu is open over it.** The wide drawer is untouched: there everything is shown and the button hidden. **A conversation row in the dropdown can be dragged onto the strip** (terminals too, with their own local `draggedTerminal` path): it sets the same `draggedChatTab` and `beginTabDrag` a strip tab does, and the visible tabs' own `dragover`/`drop` post `placeTab`, so dropping on the left half of the first tab puts it at the very start and `fitTabs` then shows it and pushes another into the list. The panel is hidden from a `setTimeout(0)` after `dragstart`, never during it, and only hidden (its nodes stay), or the source node goes and `dragend` never fires.
 
+**The dropdown reorders in place as well** (asked for). A row dragged within the list drops before or after another row of the same kind (a conversation among conversations, a terminal among terminals), with a line marking the place. The list stays open while a row is held, is not rebuilt during that drag (the row's `dragend` would never arrive), and dims (`drag-away`) while the pointer is outside it, so the strip under it still takes a drop; a drop outside closes it as before. Found by the capture-phase `dragover` on `document`: the strip's tab handlers stop propagation, so a bubbling listener misses the pointer.
+
 **The mark on each tab** (`ChatTab.status`, `ChatTabStatus` in the protocol), all asked for:
 
 | Mark | When |
 |---|---|
-| a pulsing ring, in the warning colour | an approval in the tab waits for an answer — it outranks working, since the agent is stopped on the user and the tab may not be the one in front |
-| an orbit spinner with a pulsing central dot | a turn or an agent of the tab runs (`busy`); CSS animates it independently of the working line, and stays still under reduced motion. Tab marks reset the shared `.working` margin/padding so the indicator stays vertically centered |
-| green dot | the work ended while nobody was looking at the tab |
-| orange dot | the work ended in an error: an error entry or a failed agent since the last message, or the backend replaced under a running turn |
-| nothing | finished and read — asked for; a grey square said nothing a plain tab does not — or nothing has been sent from the tab |
+| a chat bubble blinking in the warning colour (a pulsing ring in the collapsed rail and the tab list) | an approval in the tab waits for an answer — it outranks working, since the agent is stopped on the user and the tab may not be the one in front |
+| a chat bubble pulsing green (the liquid loader in the collapsed rail and the tab list) | a turn or an agent of the tab runs (`busy`); stays still under reduced motion |
+| a blue check | the work ended while nobody was looking at the tab |
+| an orange error icon | the work ended in an error: an error entry or a failed agent since the last message, or the backend replaced under a running turn |
+| a plain chat bubble | finished and read, or nothing has been sent from the tab (`tabKindMark`; the tab list shows nothing there — asked for: a grey square said nothing a plain tab does not) |
 
 - **The end of the work is a change between two posts**, busy then idle, so `ChatTab._post`
   compares the two on every change rather than any one path marking it — a turn's end, a send
@@ -7508,6 +7558,62 @@ and nothing it can find itself: prompts, replies, and one line per tool — the 
 exit code, the file read or edited, an agent with its report fenced. Thinking and notices stay
 out. The two options that open a tab are disabled at the limit. The files are swept with the
 reports (`chat-*.md` is in the sweep's name pattern); by then the agent has read the file.
+
+### Tabs grouped by project
+
+Asked for: tabs of several projects open at once read as one long list. Each conversation's
+summary carries `project: { id, name }` (`tabProject` in [src/chat/chatProject.ts](src/chat/chatProject.ts)):
+the tab's working folder, or for a separate copy its GitHub repository, so every copy of one
+repository is one project; the home directory is `home`. **The id is a hash, never the path** —
+`tabs` is a `shared` field and goes to Chrome and the website. The view groups them
+([preview-src/tabProjects.ts](preview-src/tabProjects.ts), leaf, under test): projects in the order
+their first tab appears, tabs in their strip order inside, terminals after; two folders of one
+name are numbered. Nothing changes while only one project is open.
+
+- **Narrow strip: a thin project bar above the tabs** (`projectBar`, `renderProjectBar`): All, then
+  each project — folder icon, name, tab count, how many tabs are thinking (`status: 'working'`)
+  as a blue number and how many are unread as a green one, a dot for waiting / failed (asked for:
+  numbers, not a loader). Names are shown whole while the bar has room and shrink only when it runs
+  out, longest first, down to four letters; the chosen chip never shrinks. A project out of view with unread
+  results or a question glows (`.calls`). Choosing one shows only its tabs (`.project-hidden`,
+  outside `fitTabs` and the `+N` count) and, if the tab in front is elsewhere, brings forward its
+  waiting, then unread, then failed, then last-used tab (`tabForProject`). `projectHold` keeps the
+  choice for 2 s while that selection travels.
+- **The tab in front is always on show**: a tab brought forward from another project (history,
+  the list, a new chat in another folder) moves the filter to its project. The choice and the
+  folded headings are per device (`localStorage` `aiBrowser.chat.projectFilter` /
+  `aiBrowser.chat.foldedProjects`); a project that closes resets the bar to All.
+- **Wide drawer: a sticky heading per project** that folds its tabs (the tab in front stays); in
+  the collapsed rail it is a divider with the folder and a dot when something calls. The heading is
+  small (10px, uppercase) and sits 4px left of the row's edge; the tabs under it are indented 14px
+  (`.tab-row.grouped`) with a faint guide line on their left (`::after`, not on a
+  `.chrome-mirrored` tab, whose `::after` is the Chrome mark; `::before` is the drop mark).
+  **Each heading sits in the DOM just before its group's first tab**, so Tab walks heading, tabs,
+  next heading in the order they are drawn; every child of `.tab-row` also gets a CSS `order`
+  (`renderProjectHeads`). `renderTabs` counts positions with `rowItems()`, the row's children
+  **without** the headings — `tabRow.children[i]` would be shifted by them. Headings appended at the
+  end were the first version, and keyboard focus then visited every tab before any heading. A
+  heading is moved, never a tab, so no width transition is cut short. The tabs are in grouped
+  order (`grouped.ordered`), so each group is contiguous.
+- **The tab list (`+N`) groups by project** too, with the same marks on each heading; tabs of a
+  project not on show are listed plainly (`.other-project`).
+- **Each project's folder icon has a colour of its own, and only the folder icon** (asked for):
+  `projectColors` (leaf) gives each open project a slot of twelve hues (`.pc-0` … `.pc-11` in
+  `chat.css`, lighter on dark themes, darker on light). The first choice is a hash of the id, so
+  it reads as random; a slot another open project holds moves to the next free one, so no two
+  open projects share a colour while there are twelve or fewer. The answer is kept per device
+  (`localStorage` `aiBrowser.chat.projectColors`, closed projects too, up to 64), so a project
+  keeps its colour while others open and close; a remembered slot wins over the hash while it
+  is free. Bar chip, wide heading, collapsed-rail divider and tab-list heading all use it.
+- **One empty chat per project** (asked for): New Chat "here" and the strip's "+" reuse a tab
+  nothing was sent from only when it is in the project of the tab beside which the new one would
+  open (`_tabProjectId`, the same `tabProject` the strip groups by); in another project a new
+  tab opens. It used to be one empty chat for the whole view, so a second project could not get one.
+- **Dragging a tab onto another project's tab** reorders it in the host's list, and it stays shown
+  under its own project: the order is within a project.
+
+Verified: the leaves under `npm test`, typecheck, and the bar, the list and the drawer in headless
+Chrome against the built `chat.js`. **Not run inside VS Code yet.**
 
 ### Asking another agent: a second opinion in a new tab
 
@@ -8151,6 +8257,17 @@ also capped at 20 entries per turn on average (`windowEntries` in
   which rebuilt the thread on every post of a long agent turn.
 - **The website's 5 MB trim adds what it cut to `entriesOffset`**, or the indices above point at other messages.
 - The host keeps the whole conversation in memory; only what the views hold is cut.
+- **The Conversation and Bash tabs show their newest 100 rows** (`composerListStep` in `chat.ts`), with a
+  "Show 100 more" row at the foot. It bounds the DOM only: the state keeps everything the window holds. The
+  running commands are always listed. The counts reset when another chat is shown. Measured on the editor's
+  webview only; the Chrome panel and the website run the same `chat.js`, so they get it on rebuild.
+- **Running commands and observed processes show their elapsed time** ("1m 52s", `duration()`, the same format as
+  "Worked for"). `elapsedSpan` marks the value with `data-since` and `tickBashElapsed` rewrites it every second, so
+  the rows are not rebuilt while a press is held (#365). **A process's time counts from its birth** (`ps lstart`, the
+  Windows creation time), not from when the monitor first saw it: that lags by the 5 s listing delay plus the sampling
+  pace, up to two minutes. A birth that does not parse, or lies after the first sighting, falls back to the sighting.
+- **The Agents panel lists its newest 100 agents**, with the same "Show 100 more" row. The Activity tab does not need
+  the cap: it lists only agents at work now (running or waiting on the user), and its "View all agents" link opens the panel.
 
 ### Finish sounds
 
@@ -10946,6 +11063,13 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      a built-in tab by finding its editor in `window.tabGroups` (no input, label = page title),
      focusing that group by position and running `workbench.action.openEditorAtIndex`. A failure
      goes to the status bar. Not run inside VS Code yet.
+563. **Reserving room for an overlay with padding inside a scrolling box** → the pinned-page
+     and suggestion row sits over the foot of the message box, and the room for it was
+     `padding-bottom` on the textarea and its mirror; padding is part of the scroll area, so a
+     long draft scrolled under the chips. The row's room is a 32 px `margin-bottom` on the
+     textarea (`min-height` 36, `max-height` 168, so box plus margin keeps 68–200; 8 px between
+     the last line and a chip) and `bottom: 32px` on the mirror, only while the row is shown;
+     without it the text has the whole height.
 
 ## Special cases and non-obvious decisions
 
@@ -11310,7 +11434,7 @@ It does not touch the user's Chrome profile or expose a network debugging port.
   is written by `node ./scripts/build-liquid-loader.mjs` — edit the script, never the file. The
   shape (a 40 s loop: circle at 0 s, a fluid six-rayed form, a rounded hexagon for core and shell
   at 16.8 s, held at neither, then the core shrinking into a 2 px dot — a non-scaling round-capped
-  stroke, so twice the shell's line at every size — held 4 s, and growing back into the circle) cannot be drawn with `border-radius`, so it is a SMIL-animated SVG
+  stroke, so twice the shell's line at every size — held 4 s, and growing back into the circle, which holds still for about 5 s around 0 s and has a smiley face drawn on it — the left eye pops in, then the right, then the smile is drawn left to right (`stroke-dashoffset` over `pathLength="1"`); it blinks once, then turns round the centre the way the shell turns, faster and faster, and fades out while it turns (an `animateTransform` on the face's group, put back to 0 while it is hidden). A keyframe segment that crosses the loop's end is split there with its interpolated value, or the dash would jump at 40 s; the core-only image and the reduced-motion frame have no face) cannot be drawn with `border-radius`, so it is a SMIL-animated SVG
   set as a `data:` background through `--liquid-loader-image` (core and shell) and
   `--liquid-core-image` (core alone, for the small status dots in `chat.css`). A `data:` URL keeps
   every surface on its plain `<span class="liquid-loader">` — the chat, the Chrome side panel and

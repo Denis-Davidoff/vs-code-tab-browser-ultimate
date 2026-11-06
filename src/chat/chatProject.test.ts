@@ -35,3 +35,17 @@ test('a snapshot stamped for another project is not adopted',()=>{
  assert.equal(legacyProjectTabs({project:'foreign',ids:['a']},'project'),undefined);
  assert.deepEqual(legacyProjectTabs({project:'project',ids:['a']},'project')?.ids,['a']);
 });
+
+test('tabProject groups by folder, copies by repository, and hides paths', async () => {
+	const { tabProject } = await import('./chatProject.ts');
+	const a = tabProject('/Users/x/dev/picto', undefined, false);
+	assert.equal(a.name, 'picto');
+	assert.equal(tabProject('/Users/x/dev/picto/', undefined, false).id, a.id);
+	assert.notEqual(tabProject('/Users/x/dev/other', undefined, false).id, a.id);
+	assert.ok(!a.id.includes('picto'));
+	const c1 = tabProject('/storage/copies/a-1', 'Octo/Hello', false);
+	assert.equal(c1.name, 'Hello');
+	assert.equal(tabProject('/storage/copies/b-2', 'octo/hello', false).id, c1.id);
+	assert.deepEqual(tabProject('/Users/x', undefined, true), { id: 'home', name: 'Home' });
+	assert.equal(tabProject('C:\\dev\\app', undefined, false).name, 'app');
+});
