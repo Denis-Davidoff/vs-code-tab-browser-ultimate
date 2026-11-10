@@ -29,6 +29,27 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
 
+## 0.9.23 — 2026-11-10
+
+- **A roomier docked terminal** — with its conversation docked under it, the terminal keeps about five lines of text when you open Skills, Activity or another composer tab; the messages above the box give way instead.
+- **Tighter composer tabs** — the tab row under a terminal sits closer to the border and to the message box.
+- **A darker terminal toolbar** — the strip under the terminal is a shade darker, so it reads as the terminal's own foot.
+
+## 0.9.22 — 2026-11-06
+
+- **Paste button** — with the message box empty and text on the clipboard, Send turns into Paste in the same place.
+- **Light theme fixes** — quotes are a soft tinted box with a yellow edge instead of a dark block, and code inside code blocks no longer sits on a dark strip.
+- **Forced themes** — Appearance → Light or Dark over an editor of the other kind now colours quotes, code, keys, scrollbars, notices and the terminal to match, and the terminal re-colours when you change it.
+- **Approval cards** — the command box is visible in Light Modern.
+- **Attach several files or folders** — "+" in the chat now has **Folder…** beside **File…**, and both let you pick several at once; the terminal's Insert has Folder… too.
+- **Prompts tab** — the Conversation tab above the message box is now **Prompts** (Alt+P): your messages in this chat, newest first, each with a jump to its answer.
+- **Write to the agent from its terminal** — a terminal pinned to a conversation shows that conversation's message box at its foot, and **Show messages** in the toolbar brings the conversation up above it.
+- **A tidier terminal toolbar** — one compact row with drawn tooltips, arrow-key navigation and a Scroll to bottom button that says when new output arrived.
+- **A bell on GitHub Actions runs** — hover a running run in the GitHub tab and ring the bell to hear a sound and get a system notification when it ends (Chat Settings → Sound).
+- **Copy keeps its formatting** — a selection copied from the chat goes to the clipboard as Markdown and HTML, attachment badges included.
+- **Commit & Push** — the Commit window commits and pushes in one step, and the Branches window has **Create PR** for a published branch.
+- **GitHub tab fixes** — a branch whose pull request was merged no longer shows a "Create pull request" row that cannot be used, and on a branch not pushed yet the row opens the Branches window to publish it.
+
 ## 0.9.21 — 2026-11-06
 
 - **Pinned tabs** — click the chat tab already in front to pin it; a pinned tab moves next to the other pinned ones, gets a yellow underline, and asks before it closes. Pin or unpin from the tab's menu too.

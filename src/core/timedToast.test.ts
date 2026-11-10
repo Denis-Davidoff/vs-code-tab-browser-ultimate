@@ -11,7 +11,7 @@ const compiled = transpileModule(readFileSync(resolve('src/core/timedToast.ts'),
 }).outputText;
 function load(window: unknown, schedule: (callback: () => void, ms: number) => unknown): (message: string) => void {
 	const exports: Record<string, any> = {};
-	runInNewContext(compiled, { exports, setTimeout: schedule,
+	runInNewContext(compiled, { exports, setTimeout: schedule, clearTimeout: () => undefined,
 		require(name: string) {
 			if (name === 'vscode') { return { window, ProgressLocation: { Notification: 15 } }; }
 			if (name === './notifyText') { return { plainInLabel, plainInNotification }; }
@@ -32,7 +32,7 @@ test('native commit success toast closes at ten seconds and renders completed wo
 	} }, (callback, ms) => { timers.push({ at: now + ms, callback }); return 1; });
 	show('Committed 4c71a87: Update footer');
 	assert.equal(options.location, 15);
-	assert.equal(options.cancellable, false);
+	assert.equal(options.cancellable, true);
 	assert.equal(options.title, 'Committed 4c71a87: Update footer');
 	assert.equal(reports[0].increment, 100);
 	assert.equal(timers[0].at, 10_000);
@@ -53,4 +53,16 @@ test('toast neutralizes linked commands and notification API failures never fail
 	assert.doesNotThrow(() => load({ withProgress() { throw new Error('editor closed'); } }, () => 0)('Success'));
 	assert.doesNotThrow(() => load({ withProgress() { return Promise.reject(new Error('editor closed')); } }, () => 0)('Success'));
 	await new Promise(resolve => setImmediate(resolve));
+});
+
+test('the close button ends the toast before ten seconds', async () => {
+	let visible = false, cancel: (() => void) | undefined;
+	load({ withProgress(_value: unknown, task: (progress: unknown, token: unknown) => Promise<void>) {
+		visible = true;
+		return task({ report() {} }, { onCancellationRequested(listener: () => void) { cancel = listener; } }).then(() => { visible = false; });
+	} }, () => 1)('Committed abc: x');
+	assert.equal(visible, true);
+	cancel!();
+	await Promise.resolve(); await Promise.resolve();
+	assert.equal(visible, false);
 });

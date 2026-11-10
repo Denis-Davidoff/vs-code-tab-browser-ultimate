@@ -87,10 +87,10 @@ import { gitDiffSides } from './gitDiff';
 import { assertSwitchReady, switchAndUpdate, type SwitchResult } from './gitBranchSwitch';
 import { parseGitStatus } from './gitStatus';
 import { copyName, gitMarks, hiddenNames, isInside, maxListed, resolveInside, sortEntries, type FileEntry } from './fileExplorer';
-import { ghPrFields, ghRunFields, githubListLimit, parseApiPullRequests, parseApiRuns, parseCreatedPr, parseGhPullRequests, parseGhRuns, pickGithubRemote, pullRequestBody, pullRequestHead, pullRequestTitle, type GithubCreatedPr, type GithubSource, type GithubStatus } from './githubStatus';
+import { ghPrFields, ghRunFields, githubFieldError, githubListLimit, parseApiPullRequests, parseApiRuns, parseCreatedPr, parseGhPullRequests, parseGhRuns, parseGhWorkflows, ghWorkflowFields, workflowPath, pickGithubRemote, pullRequestBody, pullRequestHead, pullRequestTitle, ghWatchedRunFields, parseWatchedRun, runEndedText, runInFlight, runWatchKey, type GithubCreatedPr, type GithubSource, type GithubStatus } from './githubStatus';
 
 /** What the GitHub tab reads from the working folder itself. */
-interface GithubLocal { readonly slug?: string; readonly branch?: string; readonly headBranch?: string; readonly published?: boolean; readonly remote?: string; readonly pushRepo?: string; readonly suggestedTitle?: string }
+interface GithubLocal { readonly slug?: string; readonly branch?: string; readonly headBranch?: string; readonly published?: boolean; readonly gone?: boolean; readonly remote?: string; readonly pushRepo?: string; readonly suggestedTitle?: string }
 import { parseRemoteUrls } from './gitBranchState';
 import { chatResourceRoots, loadFileIconTable, themedGitFiles } from './fileIconTheme';
 import type { FileIconTable } from './fileIconTable';
@@ -294,6 +294,8 @@ function readViewMode(): ChatViewMode {
 const automaticAwakeKey = 'aiBrowser.chat.automaticAwake';
 /** The most of a tool's input or output opened in a tab; past it the text is cut with a line saying so. */
 const openTextLimit = 2_000_000;
+/** The most the message box's Paste button takes from the clipboard; a longer text is refused in the status bar. */
+const composerPasteLimit = 1_000_000;
 
 /** The setting as a whole number in range; anything else is the default (#184's rule). */
 export function tabLimit(): number {
@@ -439,6 +441,13 @@ function exchangeRefusal(message: ExchangeUiMessage, tab: ChatTab, chatId: strin
 function pushKey(action: string, branch: string, remote: string, target: string, question: string): string {
 	return JSON.stringify([action, branch, remote, target, question]);
 }
+
+/** The GitHub tab's bell: how often a watched Actions run is asked about, and how long and how many failures before it is let go. */
+const runWatchPollMs = 15_000;
+const runWatchFirstMs = 3_000;
+const runWatchMaxMs = 6 * 3_600_000;
+const runWatchFailures = 20;
+const runWatchLimit = 20;
 
 export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
 	private static _connectionPermissionWrite: Promise<void> = Promise.resolve();
@@ -804,6 +813,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _terminalLeftPending = false;
 	/** A `focusInput` was asked for meanwhile: posted right after that state, as `terminalFocus` is. */
 	private _focusAfterState = false;
+	/** Focus the message box docked under the terminal in front, after the next state (#542). */
+	private _dockFocusAfterState = false;
 	/** Terminals being started: counted against the limit before they are tabs. */
 	private _terminalsStarting = 0;
 	/** The agent picked for a conversation that has started with another: asked about in the view. */
@@ -1347,7 +1358,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			}
 			// Said after the state that shows the tab, or the view has nothing to focus yet.
 			const focus = this._terminals.takeFocus();
-			if (focus) { this._postTerminal({ type: 'terminalFocus', id: focus }); }
+			if (this._dockFocusAfterState) {
+				// The docked message box asked for the keyboard: the terminal does not take it back.
+				this._dockFocusAfterState = false;
+				this._postMessage({ type: 'focusInput', dock: true });
+			} else if (focus) { this._postTerminal({ type: 'terminalFocus', id: focus }); }
 			this._saveTabs();
 		}, postDelayMs);
 	}
@@ -1624,6 +1639,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'osNotify':
 				osNotify(message.title, message.text);
 				return;
+			case 'composerClipboard':
+				await this._composerClipboard(message.action);
+				return;
 			case 'remoteTerminalSettings':
 				await this._remoteTerminalSettings(message);
 				return;
@@ -1691,6 +1709,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				this._queued = [];
 				queued.forEach(m => this._postMessage(m));
 				this._postMessage({ type: 'inputHistory', items: this._inputHistory() });
+				this._postRunWatches();
 				// Nothing was read while there was no view (see `_refreshWorkdirGit`),
 				// so the footer starts from a fresh read rather than from nothing.
 				void this._refreshWorkdirGit();
@@ -2130,9 +2149,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			case 'listAllAgents':
 				this.showAllAgents(true);
 				return;
+			case 'githubWatchRun':
+				if (typeof message.folder === 'string' && typeof message.runId === 'number') { await this._githubWatchRun(message.folder, message.runId, message.watch === true); }
+				break;
 			case 'githubStatus':
 				if (this._chromeCommand.getStore()?.remote && message.folder !== this._workdir()) { throw new Error('Open GitHub for this conversation\u2019s working folder.'); }
 				if (typeof message.folder === 'string') { await this._githubStatus(message.folder, message.signIn === true); }
+				return;
+			case 'openWorkflowFile':
+				await this._openWorkflowFile(message.folder, message.path);
 				return;
 			case 'files':
 				if (typeof message.folder === 'string' && typeof message.dir === 'string') { await this._files(message); }
@@ -2172,6 +2197,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				return;
 			case 'selectTerminal':
 				this._terminals.select(message.id);
+				this._syncTerminalOwner();
 				return;
 			case 'closeTerminal':
 				this._closeTerminal(message.id);
@@ -2213,7 +2239,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				await this._runInTerminal(message.text, message.target, message.id);
 				return;
 			case 'terminalToChat':
-				await this._terminalToChat(message.id, message.text);
+				await this._terminalToChat(message.id, message.text, message.tabId);
 				return;
 			case 'setNewsHidden':
 				// Remembered as the newest entry at the moment of hiding, in
@@ -3701,9 +3727,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private async _attach(kind: AttachmentKind): Promise<void> {
 		const tab = this._active;
 		if (kind === 'sharedPage') { this._pinCurrentBrowser(tab); return; }
-		const attachment = await this._makeAttachment(kind);
-		if (attachment) {
-			tab.attachments.push(attachment);
+		const attachments = kind === 'file' || kind === 'folder' ? await this._pickPaths(kind === 'folder') : [await this._makeAttachment(kind)].filter((a): a is Attachment => !!a);
+		if (attachments.length) {
+			tab.attachments.push(...attachments);
 			this._post();
 			this._focusInput();
 		}
@@ -3767,6 +3793,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		return this._makeAttachment(what, page);
 	}
 
+	/**
+	 * "+" → File… / Folder…: the system dialog, several at once. The paths, not the
+	 * contents: both agents read files themselves, and a large file pasted into the
+	 * prompt would cost the whole context. A folder chip is a `file` chip whose label ends in `/`.
+	 */
+	private async _pickPaths(folders: boolean): Promise<Attachment[]> {
+		const picked = await vscode.window.showOpenDialog({
+			canSelectFiles: !folders,
+			canSelectFolders: folders,
+			canSelectMany: true,
+			defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
+			openLabel: vscode.l10n.t("Attach"),
+		});
+		return (picked ?? []).filter(uri => uri.scheme === 'file').map(file => {
+			const shown = vscode.workspace.asRelativePath(file, false);
+			const name = path.basename(file.fsPath);
+			const where = shown !== file.fsPath ? ` (${shown}${folders ? '/' : ''} in the workspace)` : '';
+			return folders
+				? { chip: { id: generateUuid(), kind: 'file', label: `${name}/`, iconName: `${name}/`, filePath: file.fsPath }, text: `Attached folder: ${file.fsPath}${where}` }
+				: { chip: { id: generateUuid(), kind: 'file', label: name, iconName: name, filePath: file.fsPath }, file, text: `Attached file: ${file.fsPath}${where}` };
+		});
+	}
+
 	/** `page`: the browser tab to attach from; the one the user last had in front when absent. */
 	private async _makeAttachment(kind: AttachmentKind, page?: vscode.BrowserTab, remote=false): Promise<Attachment | undefined> {
 		const id = generateUuid();
@@ -3779,20 +3828,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			// Created by their dedicated controls, never asked for through "+" (a terminal is a pin, `pinTerminal`).
 			return undefined;
 		}
-		if (kind === 'file') {
-			const picked = await vscode.window.showOpenDialog({
-				canSelectMany: false,
-				defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
-				openLabel: vscode.l10n.t("Attach"),
-			});
-			const file = picked?.[0];
-			if (!file) {
-				return undefined;
-			}
-			const shown = vscode.workspace.asRelativePath(file, false);
-			// The path, not the contents: both agents read files themselves, and
-			// a large file pasted into the prompt would cost the whole context.
-			return { chip: { id, kind, label: path.basename(file.fsPath), iconName: path.basename(file.fsPath), filePath: file.fsPath }, file, text: `Attached file: ${file.fsPath}${shown !== file.fsPath ? ` (${shown} in the workspace)` : ''}` };
+		if (kind === 'file' || kind === 'folder') {
+			// Several at once: `_attach` takes them through `_pickPaths`; here only the first.
+			return (await this._pickPaths(kind === 'folder'))[0];
 		}
 
 		// Two refusals, because the fixes are unrelated (Recipe, step 3): without
@@ -4255,6 +4293,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		return changed;
 	}
 
+	/**
+	 * A terminal pinned to one of this surface's conversations is in front: that conversation becomes the active one
+	 * (the view shows its message box under the terminal, and a message goes to `activeTab`). The terminal stays in front.
+	 */
+	private _syncTerminalOwner(): void {
+		const front = this._terminals.front;
+		const owner = front ? ChatViewProvider._pins.owner(front) : undefined;
+		const tab = owner ? this._tabs.find(t => t.id === owner) : undefined;
+		if (tab && this._active !== tab) { this._active = tab; this._switchTo = undefined; this._post(); }
+	}
+
 	/** Asks the view to focus its message box (or the terminal in front) — after the state, when a terminal was just left. */
 	private _focusInput(): void {
 		if (this._terminalLeftPending) { this._focusAfterState = true; return; }
@@ -4637,9 +4686,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	private _pinTerminalMessage(id: unknown, tabId: unknown, pinned: unknown, mode?: unknown): void {
 		if (typeof id !== 'string' || typeof tabId !== 'string') { return; }
 		const tab = this._tabs.find(t => t.id === tabId);
-		if (!tab) { return; }
+		// A refusal still posts the state: the view's Watch only switch flips at once and is put back only by a state.
+		if (!tab) { ChatViewProvider._postAll(); return; }
 		if (pinned === true) {
-			this._pinTerminalTo(id, tab, isPinMode(mode) ? mode : 'control');
+			if (this._pinTerminalTo(id, tab, isPinMode(mode) ? mode : 'control')) { this._syncTerminalOwner(); } else { ChatViewProvider._postAll(); }
 		} else if (ChatViewProvider._pins.unpin(tab.id, id)) {
 			ChatViewProvider._postAll();
 		}
@@ -4665,8 +4715,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	/**
-	 * "Ask agent" from a terminal: a new conversation (in the terminal's folder) or an open one gets the terminal pinned,
-	 * the terminal's selected text as context, and comes to the front with the composer focused. Nothing is prefilled and
+	 * "Ask agent" from a terminal: a new conversation (in the terminal's folder) or an open one gets the terminal pinned and
+	 * the terminal's selected text as context. The terminal stays in front with that conversation docked under it. Nothing is prefilled and
 	 * nothing is sent: the user asks. The tab limit is checked before anything changes, so a refusal leaves the terminal in front.
 	 */
 	private async _terminalAskAgent(id: string, target: { kind: 'new'; agent?: AgentId } | { kind: 'tab'; tabId: string }, selection: unknown, mode?: unknown): Promise<void> {
@@ -4705,13 +4755,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			const shaped = terminalChatText(plainText(selection.length > terminalSelectionLimit ? selection.slice(-terminalSelectionLimit) : selection), terminal.name, terminal.cwd);
 			if (shaped) { tab.attachments.push({ chip: { id: generateUuid(), kind: 'selection', label: shaped.label }, text: shaped.text }); }
 		}
-		if (target.kind === 'tab') {
-			// `_addTab` has done this for a new one.
-			this._selectTab(tab.id);
-		}
-		this._leaveTerminal();
+		// The terminal stays in front: its conversation docks under it (messages and message box), so there is
+		// no switch to the chat tab. `_addTab` / a selection may have taken the front away; it is put back.
+		this._active = tab;
+		this._switchTo = undefined;
+		// `setFront`, not `select`: `select` asks for terminal focus, which would take the keyboard from the
+		// docked message box right after the state (#542). The focus request goes after that state too.
+		this._terminals.setFront(terminal.id);
+		terminal.markRead();
+		this._terminalLeftPending = false;
+		this._focusAfterState = false;
+		this._dockFocusAfterState = true;
 		this._post();
-		this._focusInput();
 	}
 
 	private async _restartTerminal(id: string): Promise<void> {
@@ -4740,6 +4795,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const text = sanitizePaste(raw);
 		if (!text) { return; }
 		this._postTerminal({ type: 'terminalPaste', id, text });
+	}
+
+	/**
+	 * The message box's Paste button: shown in Send's place while the box is empty and the clipboard holds text.
+	 * `peek` answers only whether there is text; `paste` sends it, refused past `composerPasteLimit`.
+	 * Straight to a ready view, never queued: a stale answer for a view that was not looking is worth nothing.
+	 */
+	private async _composerClipboard(action: 'peek' | 'paste'): Promise<void> {
+		if (this._chromeCommand?.getStore() || !this._view) { return; }
+		let raw = '';
+		try { raw = await vscode.env.clipboard.readText(); } catch { /* No clipboard: nothing to offer. */ }
+		// Text past the limit is not offered: the button would read Paste and every press be refused.
+		const hasText = !!raw.trim() && raw.length <= composerPasteLimit;
+		if (action === 'paste' && raw.length > composerPasteLimit) {
+			refuse(vscode.l10n.t("The clipboard is too large to paste into the message box."));
+			return;
+		}
+		this._postTerminal(action === 'paste' && hasText ? { type: 'composerClipboard', hasText, text: raw } : { type: 'composerClipboard', hasText });
 	}
 
 	/**
@@ -4792,6 +4865,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 					return { paths: [await saveBinary('files', `${generateUuid()}-${pastedFileName(f.name)}`, data)] };
 				}
 				const picked = await vscode.window.showOpenDialog({ canSelectMany: true, defaultUri: vscode.Uri.file(terminal.cwd), openLabel: vscode.l10n.t("Insert") });
+				return picked?.length ? { paths: picked.filter(u => u.scheme === 'file').map(u => u.fsPath) } : undefined;
+			}
+			case 'folder': {
+				const picked = await vscode.window.showOpenDialog({ canSelectFiles: false, canSelectFolders: true, canSelectMany: true, defaultUri: vscode.Uri.file(terminal.cwd), openLabel: vscode.l10n.t("Insert") });
 				return picked?.length ? { paths: picked.filter(u => u.scheme === 'file').map(u => u.fsPath) } : undefined;
 			}
 			case 'video': {
@@ -5008,16 +5085,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		setTimeout(() => tab!.input(command.replace(/\n/g, '\r') + '\r'), target === 'newTab' ? 400 : 0);
 	}
 
-	private async _terminalToChat(id: string, text: unknown): Promise<void> {
+	private async _terminalToChat(id: string, text: unknown, tabId?: unknown): Promise<void> {
 		const tab = this._terminals.find(id);
 		if (!tab || typeof text !== 'string' || this._blocked()) { return; }
+		// The conversation picked in the view's menu; none named (an older view) is the one in front.
+		const target = typeof tabId === 'string' ? this._tabs.find(t => t.id === tabId) : this._active;
+		if (!target) { refuse(vscode.l10n.t("That conversation is no longer open.")); return; }
 		const shaped = terminalChatText(plainText(text.length > terminalSelectionLimit ? text.slice(-terminalSelectionLimit) : text), tab.name, tab.cwd);
 		if (!shaped) {
 			refuse(vscode.l10n.t("There is no text in the terminal to attach."));
 			return;
 		}
-		this._active.attachments.push({ chip: { id: generateUuid(), kind: 'selection', label: shaped.label }, text: shaped.text });
+		target.attachments.push({ chip: { id: generateUuid(), kind: 'selection', label: shaped.label }, text: shaped.text });
 		this._leaveTerminal();
+		this._active = target;
+		this._switchTo = undefined;
 		this._post();
 		this._focusInput();
 	}
@@ -5058,6 +5140,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				const notify = vscode.workspace.getConfiguration('aiBrowser.chat.notifications');
 				if (typeof message.notify === 'boolean') { await notify.update('enabled', message.notify, vscode.ConfigurationTarget.Global); }
 				if (typeof message.notifyAway === 'boolean') { await notify.update('onlyWhenAway', message.notifyAway, vscode.ConfigurationTarget.Global); }
+				if (typeof message.githubRunNotify === 'boolean') { await notify.update('githubRun', message.githubRunNotify, vscode.ConfigurationTarget.Global); }
+				if (message.githubRun === 'none' || (typeof message.githubRun === 'string' && (chatSounds as readonly string[]).includes(message.githubRun))) { await config.update('githubRun', message.githubRun, vscode.ConfigurationTarget.Global); }
 				if (typeof message.repeat === 'number' && Number.isFinite(message.repeat)) { await config.update('repeat', Math.round(Math.min(5, Math.max(1, message.repeat))), vscode.ConfigurationTarget.Global); }
 				if (typeof message.volume === 'number' && Number.isFinite(message.volume)) { await config.update('volume', Math.round(Math.min(200, Math.max(0, message.volume))), vscode.ConfigurationTarget.Global); }
 			} catch (error) {
@@ -5709,6 +5793,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			...status, branch, headBranch: local.headBranch, pushRepo: local.pushRepo,
 			prs: status.prs.map(pr => ({ ...pr, current: !!pushed && pr.branch === pushed && (pr.headRepo ?? slug).toLowerCase() === (local.pushRepo ?? slug).toLowerCase() })), runs: mark(status.runs),
 			...(local.published !== undefined ? { published: local.published } : {}),
+			...(local.gone ? { upstreamGone: true } : {}),
 			...(local.suggestedTitle ? { suggestedTitle: local.suggestedTitle } : {}),
 		});
 		const cached = this._githubCache.get(slug);
@@ -5726,7 +5811,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				const prs = parseGhPullRequests(await run(['pr', 'list', '--repo', slug, '--state', 'open', '--limit', String(githubListLimit), '--json', ghPrFields]), branch);
 				let runs: GithubStatus['runs'] = [];
 				let runsError: string | undefined;
-				try { runs = parseGhRuns(await run(['run', 'list', '--repo', slug, '--limit', String(githubListLimit), '--json', ghRunFields]), branch); }
+				try {
+					// `gh run list` names a run's workflow by id only; its file comes from the workflow list.
+					const [list, workflows] = await Promise.all([
+						run(['run', 'list', '--repo', slug, '--limit', String(githubListLimit), '--json', ghRunFields]),
+						run(['workflow', 'list', '--repo', slug, '--all', '--limit', '200', '--json', ghWorkflowFields]).then(parseGhWorkflows, () => undefined),
+					]);
+					runs = parseGhRuns(list, branch, workflows);
+				}
 				catch (error) { runsError = error instanceof Error ? error.message : String(error); }
 				const defaultBranch = (await run(['repo', 'view', slug, '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name']).catch(() => '')).trim();
 				return done({ repo: slug, source: 'gh', prs, runs, ...(runsError ? { runsError } : {}), ...(validBranch(defaultBranch) ? { defaultBranch } : {}) });
@@ -5753,6 +5845,92 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 	}
 
 	/**
+	 * Actions runs whose bell is on in the GitHub tab, by `runWatchKey`. Each is
+	 * polled every `runWatchPollMs` until it ends; then the view plays the
+	 * Actions sound and the system shows a notification. In memory, per chat
+	 * surface: a reload or a closed window forgets them.
+	 */
+	private readonly _runWatches = new Map<string, { folder: string; slug: string; id: number; title: string; url?: string; since: number; failures: number }>();
+	private _runWatchTimer: ReturnType<typeof setTimeout> | undefined;
+	private _runWatchPolling = false;
+
+	private _postRunWatches(): void {
+		if (!this._view || !this._viewReady) { return; }
+		void this._view.webview.postMessage({ type: 'githubRunWatches', runs: [...this._runWatches.keys()] } satisfies HostToView);
+	}
+
+	private async _githubWatchRun(folder: string, runId: number, watch: boolean): Promise<void> {
+		if (!Number.isSafeInteger(runId) || runId <= 0) { return; }
+		// Turning a bell off runs nothing and needs no remote: match the stored watch, so it can always be
+		// taken back, even after the folder's remote changed or the window became blocked. A run id is unique across GitHub.
+		if (!watch) {
+			for (const [key, w] of this._runWatches) { if (w.id === runId) { this._runWatches.delete(key); } }
+			this._postRunWatches();
+			return;
+		}
+		if (this._blocked()) { refuse(vscode.l10n.t('GitHub is unavailable in this window.')); this._postRunWatches(); return; }
+		let slug: string | undefined;
+		try { slug = (await this._githubLocal(folder)).slug; } catch { slug = undefined; }
+		if (!slug) { refuse(vscode.l10n.t('This folder has no GitHub remote.')); this._postRunWatches(); return; }
+		const key = runWatchKey(slug, runId);
+		if (this._runWatches.size >= runWatchLimit && !this._runWatches.has(key)) { refuse(vscode.l10n.t('At most {0} Actions runs can be watched at once.', runWatchLimit)); this._postRunWatches(); return; }
+		const known = this._githubCache.get(slug)?.status.runs.find(r => r.id === runId);
+		this._runWatches.set(key, { folder, slug, id: runId, title: known?.title || known?.name || `Run ${runId}`, url: known?.url, since: Date.now(), failures: 0 });
+		this._postRunWatches();
+		confirm(vscode.l10n.t('You will be told when {0} ends.', plainInLabel(this._runWatches.get(key)!.title)));
+		this._scheduleRunWatch(runWatchFirstMs);
+	}
+
+	private _scheduleRunWatch(delay = runWatchPollMs): void {
+		if (this._disposed || !this._runWatches.size || this._runWatchTimer) { return; }
+		this._runWatchTimer = setTimeout(() => { this._runWatchTimer = undefined; void this._pollRunWatches(); }, delay);
+	}
+
+	private async _pollRunWatches(): Promise<void> {
+		if (this._runWatchPolling || this._disposed) { return; }
+		this._runWatchPolling = true;
+		try {
+			const gh = await this._ghBinary();
+			for (const [key, watch] of [...this._runWatches]) {
+				if (this._disposed || this._runWatches.get(key) !== watch) { continue; }
+				if (Date.now() - watch.since > runWatchMaxMs) {
+					this._runWatches.delete(key);
+					refuse(vscode.l10n.t('Stopped watching {0}: it has run for more than {1} hours.', plainInLabel(watch.title), runWatchMaxMs / 3_600_000));
+					continue;
+				}
+				// `gh` first, as the tab reads them; VS Code's sign-in or the public API otherwise.
+				let run: ReturnType<typeof parseWatchedRun>;
+				if (gh) { try { run = parseWatchedRun(await this._runGh(gh, ['run', 'view', String(watch.id), '--repo', watch.slug, '--json', ghWatchedRunFields])); } catch { run = undefined; } }
+				if (!run) { try { run = parseWatchedRun(await this._githubApi(watch.slug, `actions/runs/${watch.id}`, await this._githubToken(false, []))); } catch { run = undefined; } }
+				// The poll awaited the network: the bell may have been turned off, rung again (a new watch under the same
+				// key, which must not be deleted for this one) or the view gone, and nothing is said for a watch that is over.
+				if (this._disposed || this._runWatches.get(key) !== watch) { continue; }
+				if (!run) {
+					if (++watch.failures >= runWatchFailures) {
+						this._runWatches.delete(key);
+						refuse(vscode.l10n.t('Stopped watching {0}: GitHub did not answer.', plainInLabel(watch.title)));
+					}
+					continue;
+				}
+				watch.failures = 0;
+				if (run.title) { watch.title = run.title; }
+				if (run.url) { watch.url = run.url; }
+				if (runInFlight(run.state)) { continue; }
+				this._runWatches.delete(key);
+				this._githubCache.delete(watch.slug);
+				const settings = soundSettings();
+				if (settings.githubRunNotify !== false) { osNotify(`GitHub Actions: ${watch.title}`, `${watch.slug} — ${runEndedText(run.state)}`, true); }
+				confirm(vscode.l10n.t('{0}: {1}', plainInLabel(watch.title), runEndedText(run.state)));
+				if (this._view && this._viewReady) { void this._view.webview.postMessage({ type: 'githubRunEnded', key, state: run.state } satisfies HostToView); }
+			}
+		} finally {
+			this._runWatchPolling = false;
+			this._postRunWatches();
+			this._scheduleRunWatch();
+		}
+	}
+
+	/**
 	 * What the GitHub tab needs from the working folder itself: the repository
 	 * (from its remotes, never from the view), the branch checked out, where that
 	 * branch is pushed, and its last commit subject.
@@ -5769,10 +5947,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		if (!branch) { return { slug: repo && repoSlug(repo) }; }
 		const [upstream, subject] = await Promise.all([
 			// The name the branch is pushed under, which a tracking branch may spell differently.
-			run(['for-each-ref', '--format=%(upstream:remoteref)', `refs/heads/${branch}`]),
+			run(['for-each-ref', '--format=%(upstream:remoteref) %(upstream:track)', `refs/heads/${branch}`]),
 			run(['log', '-1', '--format=%s', branch]),
 		]);
-		const remoteRef = upstream.trim();
+		// `[gone]`: the upstream was deleted on the remote (a merged pull request's
+		// branch, typically), so the branch is not published any more and GitHub
+		// answers a pull request for it with a bare "Validation Failed".
+		const [remoteRef = '', ...track] = upstream.trim().split(' ');
+		if (track.join(' ').includes('gone')) { return { slug: repo && repoSlug(repo), branch, published: false, gone: true, remote: upstreamRemote || undefined, suggestedTitle: subject.trim().slice(0, 256) || undefined }; }
 		const headBranch = remoteRef.startsWith('refs/heads/') ? remoteRef.slice('refs/heads/'.length) : undefined;
 		const pushRemote = remotes.find(r => r.name === upstreamRemote);
 		const pushRepo = pushRemote && parseRepo(pushRemote.url);
@@ -5799,7 +5981,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		const body = await response.text();
 		if (!response.ok) {
 			let detail = '';
-			try { const e = JSON.parse(body) as { message?: unknown; errors?: { message?: unknown }[] }; detail = [e.errors?.[0]?.message, e.message].find(m => typeof m === 'string') as string ?? ''; } catch { /* plain status */ }
+			try { const e = JSON.parse(body) as { message?: unknown; errors?: { message?: unknown; field?: unknown; code?: unknown }[] }; detail = [e.errors?.[0]?.message, githubFieldError(e.errors?.[0]), e.message].find(m => typeof m === 'string' && m) as string ?? ''; } catch { /* plain status */ }
 			if (detail) { throw new Error(plainInLabel(detail).slice(0, 300)); }
 			throw new Error(response.status === 404 ? 'Repository not found, or private.' : response.status === 403 || response.status === 429 ? 'GitHub refused: rate limit or no access.' : `GitHub answered ${response.status}.`);
 		}
@@ -5828,7 +6010,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			const local = await this._githubLocal(folder);
 			const { slug, branch } = local;
 			if (!slug || !branch) { throw new Error(slug ? 'No branch is checked out.' : 'This folder has no GitHub remote.'); }
-			if (!local.published) { throw new Error(`Publish ${branch} first (Branches window), then create the pull request.`); }
+			if (!local.published) { throw new Error(local.gone ? `${branch} was deleted on the remote. Push it again (Branches window → Publish), then create the pull request.` : `Publish ${branch} first (Branches window), then create the pull request.`); }
 			const status = this._githubCache.get(slug)?.status;
 			const base = status?.defaultBranch;
 			if (!base) { throw new Error('The repository\'s default branch is not known yet. Refresh and try again.'); }
@@ -5853,7 +6035,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			if (!created) {
 				const token = await this._githubToken(true, failures);
 				if (!token) { throw new Error(failures.join(' · ') || 'Sign in to GitHub to open a pull request.'); }
-				created = parseCreatedPr(await this._githubApi(slug, 'pulls', token, { title, head, base, body, draft }));
+				try { created = parseCreatedPr(await this._githubApi(slug, 'pulls', token, { title, head, base, body, draft })); }
+				catch (error) { failures.push(error instanceof Error ? error.message : String(error)); throw new Error(failures.join(' · ')); }
 				if (!created) { throw new Error('GitHub did not say which pull request it opened.'); }
 			}
 			this._githubCache.delete(slug);
@@ -5921,7 +6104,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 			const forView = !!this._view && !this._chromeCommand?.getStore();
 			const decorated = this._view && forView ? await themedGitFiles(status, this._view.webview, vscode.Uri.joinPath(this._context.extensionUri, 'media'), vscode.Uri.file(folder)) : status;
 			const branches = parseGitBranches(current, refs, urls);
-			const answer: Extract<HostToView, { type: 'workdirGit' }> = { type: 'workdirGit', folder, status: decorated, branches: { ...branches, ...this._pullRequestFor(branches), savedStash: this._branchStashes.get(folder)?.at(-1) } };
+			const pr = this._pullRequestFor(branches);
+			// With `gh`, Create PR leads to the GitHub tab, which creates it in place.
+			const gh = pr.pullRequest && await this._ghBinary() ? { gh: true } : {};
+			const answer: Extract<HostToView, { type: 'workdirGit' }> = { type: 'workdirGit', folder, status: decorated, branches: { ...branches, ...pr, ...gh, savedStash: this._branchStashes.get(folder)?.at(-1) } };
 			// Only the editor view's own read is kept: Chrome's carries no themed file
 			// icons, and a hidden view answered from it would lose them.
 			if (forView) {
@@ -5953,6 +6139,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 				await this._runWorkdirGit(git, ['-c', `core.hooksPath=${os.devNull}`, '-c', 'credential.interactive=false', 'fetch', '--all', '--prune', '--no-recurse-submodules', '--quiet'], folder, 20_000, { GIT_ASKPASS: '', SSH_ASKPASS: '', SSH_ASKPASS_REQUIRE: 'never' });
 			}
 		});
+	}
+
+	/**
+	 * The workflow file an Actions run came from, opened from the working folder's
+	 * repository root (the folder may be a subfolder of it). The path is GitHub's,
+	 * so only a file directly in `.github/workflows` is taken (`workflowPath`), and
+	 * a missing one — a run of another branch's workflow — says so.
+	 */
+	private async _openWorkflowFile(folder: unknown, file: unknown): Promise<void> {
+		const relative = workflowPath(file);
+		if (typeof folder !== 'string' || !relative || this._blocked() || folder !== this._workdir()) { return; }
+		try {
+			const git = await gitBinary();
+			if (!git) { throw new Error('Git is unavailable.'); }
+			const root = (await this._runWorkdirGit(git, ['rev-parse', '--show-toplevel'], folder)).trim();
+			if (!root) { throw new Error('This folder is not in a Git repository.'); }
+			let real: string;
+			try { real = await fs.promises.realpath(path.join(root, relative)); }
+			catch { refuse(vscode.l10n.t('{0} is not in this checkout (another branch may have it).', plainInLabel(relative))); return; }
+			// A repository can commit the file as a link: open it only when it leads to a place in the checkout.
+			if (!isInside(await fs.promises.realpath(root), real)) { refuse(vscode.l10n.t('{0} leads outside this checkout.', plainInLabel(relative))); return; }
+			const uri = vscode.Uri.file(real);
+			await vscode.commands.executeCommand('vscode.open', uri, { preview: true, viewColumn: vscode.ViewColumn.Active } satisfies vscode.TextDocumentShowOptions);
+		} catch (error) { refuse(vscode.l10n.t('Could not open {0}: {1}', plainInLabel(relative), plainInLabel(error instanceof Error ? error.message : String(error)))); }
 	}
 
 	private async _openGitDiff(message: Extract<ViewToHost, { type: 'openGitDiff' }>): Promise<void> {
@@ -8436,6 +8646,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, vscode.Disp
 		for (const view of this._shellOutputViews.values()) { view.dispose(); }
 		for (const view of [...(this._processViews?.values() ?? [])]) { view.dispose(); }
 		this._processWatch?.dispose(); this._processWatch = undefined;
+		// `?.`: tests lift `dispose` into a sandbox without the rest of the class.
+		clearTimeout(this._runWatchTimer); this._runWatches?.clear();
 		for (const request of this._draftRequests.values()) { clearTimeout(request.timer); request.reject(new Error('The source chat was closed.')); }
 		this._draftRequests.clear();
 		ChatViewProvider._surfaces.delete(this._surfaceId);
@@ -8634,7 +8846,15 @@ function soundSettings(): ChatSoundSettings {
 		repeat: typeof repeat === 'number' && Number.isFinite(repeat) ? Math.round(Math.min(5, Math.max(1, repeat))) : 1,
 		notify: vscode.workspace.getConfiguration('aiBrowser.chat.notifications').get<unknown>('enabled') !== false,
 		notifyAway: vscode.workspace.getConfiguration('aiBrowser.chat.notifications').get<unknown>('onlyWhenAway') !== false,
+		githubRun: githubRunSound(),
+		githubRunNotify: vscode.workspace.getConfiguration('aiBrowser.chat.notifications').get<unknown>('githubRun') !== false,
 	};
+}
+
+/** `aiBrowser.chat.sound.githubRun`: a known sound, or `none`; anything else is the default. */
+function githubRunSound(): ChatSound | 'none' {
+	const value = vscode.workspace.getConfiguration('aiBrowser.chat.sound').get<unknown>('githubRun');
+	return value === 'none' || (typeof value === 'string' && (chatSounds as readonly string[]).includes(value)) ? value as ChatSound | 'none' : 'success';
 }
 
 /**
@@ -8643,9 +8863,11 @@ function soundSettings(): ChatSoundSettings {
  * passed as data (argv, environment), never spliced into a script (#158).
  * Not a VS Code toast: that would pause a browser tab (#10).
  */
-function osNotify(title: string, text: string): void {
+function osNotify(title: string, text: string, asked = false): void {
 	const settings = soundSettings();
-	if (!settings.notify || (settings.notifyAway && vscode.window.state.focused)) { return; }
+	// `asked`: the user rang a bell for this one (a watched Actions run), so the
+	// agents' own on/off and "only when away" do not apply.
+	if (!asked && (!settings.notify || (settings.notifyAway && vscode.window.state.focused))) { return; }
 	const clean = (value: unknown, max: number) => String(value ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, max);
 	const t = clean(title, 120) || 'AI Browser';
 	const body = clean(text, 300);

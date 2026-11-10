@@ -216,10 +216,10 @@ test('Claude launches Ultracode independently and preserves tool approval settin
 	}
 	const { ClaudeBackend } = load<typeof import('./claudeAgent.ts')>('src/chat/claudeAgent.ts', {
 		vscode: { EventEmitter: Emitter, l10n: { t: (text: string) => text } },
-		'./agentProtocol': protocol, './agentProcess': { JsonLineProcess: FakeProcess },
+		'./agentProtocol': protocol, './agentProcess': { JsonLineProcess: FakeProcess, withTimeout: <T>(promise: Promise<T>) => promise },
 		'./agentProcesses': { agentProcesses: { environment: () => ({}) } },
 		'./autoTitle': {}, './commitMessage': {}, '../core/safeFiles': {},
-		'../core/uuid': {}, '../core/chatCapability': {},
+		'../core/uuid': { generateUuid: () => 'probe-uuid' }, '../core/chatCapability': {},
 	});
 	const backend = new ClaudeBackend('unused-test-binary', () => '/tmp');
 	const session = backend.openSession('/tmp');

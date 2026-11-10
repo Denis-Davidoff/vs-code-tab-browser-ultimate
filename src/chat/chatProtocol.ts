@@ -420,7 +420,8 @@ export interface ChatSummary {
 	readonly updatedAt: number;
 }
 
-export type AttachmentKind = 'screenshot' | 'element' | 'page' | 'sharedPage' | 'selection' | 'file' | 'voice' | 'video' | 'annotation' | 'pointAnnotation' | 'terminal';
+/** `folder` is only asked for through "+"; its chips are `file` chips whose label ends in `/`. */
+export type AttachmentKind = 'screenshot' | 'element' | 'page' | 'sharedPage' | 'selection' | 'file' | 'folder' | 'voice' | 'video' | 'annotation' | 'pointAnnotation' | 'terminal';
 
 /** What the composer shows for an attachment; the content stays in the host. */
 export interface AttachmentChip {
@@ -517,6 +518,8 @@ export interface GitBranchState {
  readonly remotes?: readonly { readonly name: string; readonly url: string; readonly defaultBranch?: string }[];
  /** GitHub's page for a pull request from the published current branch, when its remote is github.com. */
  readonly pullRequest?: string;
+ /** The `gh` CLI is installed: Create PR opens the GitHub tab instead of the browser. */
+ readonly gh?: boolean;
 }
 
 export interface GitHeadUpstream {
@@ -852,6 +855,10 @@ export interface PendingSend {
 	readonly id: string;
 	readonly text: string;
 	readonly kind: 'steer' | 'queue';
+	/** A `steer` message the agent can still drop (Claude Code); its × asks it to. */
+	readonly withdrawable?: boolean;
+	/** The agent has been asked to drop it and has not answered yet. */
+	readonly withdrawing?: boolean;
 	/** Labels of the attachments that go with it. */
 	readonly attachments: readonly string[];
 	/** The chips themselves, by index, so the waiting bubble draws the same badges a sent prompt does. */
@@ -919,6 +926,10 @@ export interface ChatSoundSettings {
 	readonly notify: boolean;
 	/** `aiBrowser.chat.notifications.onlyWhenAway`: only while the window is not focused. */
 	readonly notifyAway: boolean;
+	/** `aiBrowser.chat.sound.githubRun`: the sound when a watched GitHub Actions run ends, or `none`. Absent: `success` (older hosts). */
+	readonly githubRun?: ChatSound | 'none';
+	/** `aiBrowser.chat.notifications.githubRun`: a system notification when a watched run ends. Absent: true. */
+	readonly githubRunNotify?: boolean;
 }
 
 export type ChatTabStatus = 'waiting' | 'working' | 'unread' | 'failed' | 'read';
@@ -991,7 +1002,8 @@ export type HostToView =
 	| { readonly type: 'exchangeBrowser'; readonly message?: string }
 	| { readonly type: 'usage'; readonly usage: readonly AgentUsage[]; readonly stats?: ChatStats; readonly loading: boolean }
 	| { readonly type: 'flashTab'; readonly id: string }
-	| { readonly type: 'focusInput' }
+	/** `dock`: the terminal stays in front with its pinned conversation docked under it — show the messages and focus that box. */
+	| { readonly type: 'focusInput'; readonly dock?: boolean }
 	/**
 	 * Terminal output, posted DIRECTLY (never through `_postMessage`, which queues
 	 * and diverts): batched, ordered by `seq`, and acknowledged by `terminalAck`.
@@ -1003,6 +1015,8 @@ export type HostToView =
 	| { readonly type: 'terminalSettings'; readonly settings: TerminalSettings }
 	/** The answer to `terminalPasteRequest`: the clipboard's text, to be pasted into that terminal. */
 	| { readonly type: 'terminalPaste'; readonly id: string; readonly text: string }
+	/** The answer to `composerClipboard`: whether the clipboard holds text, and the text itself for `paste`. */
+	| { readonly type: 'composerClipboard'; readonly hasText: boolean; readonly text?: string }
 	/** Focus this terminal's keyboard input (a terminal tab was selected, or the view was revealed on it). */
 	| { readonly type: 'terminalFocus'; readonly id: string }
 	/** The view's title bar cup: open the keep-awake popup. */
@@ -1047,6 +1061,10 @@ export type HostToView =
 	/** The composer's GitHub tab: pull requests and Actions runs of `folder`'s repository, or why there are none. */
 	/** A Files tab listing of `dir` in `folder`, or the outcome of an action on it. */
 	| { readonly type: 'files'; readonly request: number; readonly folder: string; readonly dir: string; readonly entries?: readonly import('./fileExplorer').FileEntry[]; readonly truncated?: boolean; readonly clipboard?: { readonly count: number; readonly cut: boolean }; readonly error?: string; readonly notice?: string; /** For `complete`: the folders directly inside `dir`. */ readonly completions?: readonly string[] }
+	/** The Actions runs whose bell is on, as `runWatchKey` spells them. */
+	| { readonly type: 'githubRunWatches'; readonly runs: readonly string[] }
+	/** A watched run has ended: the view plays the Actions sound and refreshes the GitHub tab. */
+	| { readonly type: 'githubRunEnded'; readonly key: string; readonly state: import('./githubStatus').GithubRunState }
 	| { readonly type: 'githubStatus'; readonly folder: string; readonly status?: import('./githubStatus').GithubStatus; readonly error?: string; /** Signing in to GitHub would show more (a private repository, no `gh`). */ readonly signIn?: boolean; /** A pull request was just opened from the tab. */ readonly created?: import('./githubStatus').GithubCreatedPr; /** Opening one failed; the list is unchanged. */ readonly createError?: string }
 	| { readonly type: 'workdirGit'; readonly folder: string; readonly status?: WorkdirGitStatus; readonly branches?: GitBranchState; readonly error?: string; readonly fetchError?: string }
 	/**
@@ -1076,9 +1094,11 @@ export type ViewToHost =
 	| { readonly type: 'temporaryStorage'; readonly action: 'refresh' | 'all' | 'project'; readonly project?: string }
 	/** The Remote terminals section: `load`, or `set` one of the three user settings (applies at once). */
 	| { readonly type: 'soundSettings'; readonly action: 'load' }
-	| { readonly type: 'soundSettings'; readonly action: 'set'; readonly enabled?: boolean; readonly activeChat?: boolean; readonly sound?: ChatSound; readonly volume?: number; readonly repeat?: number; readonly notify?: boolean; readonly notifyAway?: boolean }
+	| { readonly type: 'soundSettings'; readonly action: 'set'; readonly enabled?: boolean; readonly activeChat?: boolean; readonly sound?: ChatSound; readonly volume?: number; readonly repeat?: number; readonly notify?: boolean; readonly notifyAway?: boolean; readonly githubRun?: ChatSound | 'none'; readonly githubRunNotify?: boolean }
 	/** An agent finished: the host shows it as a system notification (editor only; Chrome and the website use the page's own). */
 	| { readonly type: 'osNotify'; readonly title: string; readonly text: string }
+	/** The empty message box asks whether the clipboard holds text (`peek`), or for that text (`paste`). Editor only. */
+	| { readonly type: 'composerClipboard'; readonly action: 'peek' | 'paste' }
 	/** Chrome and the website: send more of the conversation's earlier turns. Answered by the surface's bridge. */
 	| { readonly type: 'loadEarlier'; readonly chatId: string; readonly reset?: boolean }
 	| { readonly type: 'setConnectionPermission'; readonly surface: 'chrome' | 'exchange'; readonly group: import('./core/commands').ConnectionPermission; readonly allowed: boolean }
@@ -1144,6 +1164,10 @@ export type ViewToHost =
 	| { readonly type: 'listAllAgents' }
 	/** The GitHub tab asks for `folder`'s pull requests and runs; `signIn` may ask VS Code's GitHub sign-in. */
 	| { readonly type: 'githubStatus'; readonly folder: string; readonly signIn?: boolean }
+	/** The GitHub tab's bell on an Actions run: tell me when it ends (sound and a system notification), or stop. */
+	| { readonly type: 'githubWatchRun'; readonly folder: string; readonly runId: number; readonly watch: boolean }
+	/** Opens the workflow file an Actions run came from, from the folder's own repository. */
+	| { readonly type: 'openWorkflowFile'; readonly folder: string; readonly path: string }
 	/** The Files tab: list a folder of the working folder, or act on entries (paths relative to it, '/'-separated). */
 	| { readonly type: 'files'; readonly request: number; readonly folder: string; readonly action: 'list' | 'open' | 'reveal' | 'revealOs' | 'delete' | 'copy' | 'cut' | 'paste' | 'copyPath' | 'copyRelativePath' | 'attach' | 'newFolder' | 'drop' | 'complete' | 'upload'; readonly dir: string; readonly paths?: readonly string[]; readonly name?: string; /** For `drop`: `file:` URIs dragged in from VS Code or the system, copied (or moved, when inside the folder and `move`). */ readonly uris?: readonly string[]; readonly move?: boolean; /** For `upload`: a file dropped from the system, which a webview sees without its path. */ readonly data?: string }
 	/** The GitHub tab opens a pull request for `folder`'s current branch against the default branch. */
@@ -1211,8 +1235,8 @@ export type ViewToHost =
 	 * file the host writes. Bracketed when the program asked for it; never followed by Enter. `file`: a
 	 * file dropped on or pasted into the terminal, base64.
 	 */
-	| { readonly type: 'terminalInsert'; readonly id: string; readonly kind: 'page' | 'element' | 'screenshot' | 'file' | 'selection' | 'video' | 'annotation'; readonly file?: { readonly name: string; readonly data: string } }
-	/** "Ask agent" from a terminal: a new conversation, or an open one; the terminal is pinned there and the conversation comes to the front with the composer focused. `selection` (selected text) is attached as context. */
+	| { readonly type: 'terminalInsert'; readonly id: string; readonly kind: 'page' | 'element' | 'screenshot' | 'file' | 'folder' | 'selection' | 'video' | 'annotation'; readonly file?: { readonly name: string; readonly data: string } }
+	/** "Ask agent" from a terminal: a new conversation, or an open one; the terminal is pinned there and stays in front, with that conversation's messages and message box docked under it. `selection` (selected text) is attached as context. */
 	| { readonly type: 'terminalAskAgent'; readonly id: string; readonly target: { readonly kind: 'new'; readonly agent?: AgentId } | { readonly kind: 'tab'; readonly tabId: string }; readonly selection?: string; readonly mode?: 'watch' | 'control' }
 	/** The emergency stop and its release: while `allowed` is false the agent's input to this terminal is refused. */
 	| { readonly type: 'setTerminalAgentControl'; readonly id: string; readonly allowed: boolean }
@@ -1234,7 +1258,7 @@ export type ViewToHost =
 	/** Paste goes through the host: the host answers with `terminalPaste`. */
 	| { readonly type: 'terminalPasteRequest'; readonly id: string }
 	/** Selected text or the last `lines` lines of the screen, attached to the conversation in front as context; the view then shows that conversation. */
-	| { readonly type: 'terminalToChat'; readonly id: string; readonly text: string }
+	| { readonly type: 'terminalToChat'; readonly id: string; readonly text: string; /** The conversation chosen in the menu; absent: the one in front. */ readonly tabId?: string }
 	/** A shell code block's Run: typed into VS Code's terminal, a chat terminal tab, or a new one, then Enter. */
 	| { readonly type: 'runInTerminal'; readonly text: string; readonly target: 'vscode' | 'tab' | 'newTab'; readonly id?: string }
 	/** The composer's browser button: a new browser tab, nothing else. */

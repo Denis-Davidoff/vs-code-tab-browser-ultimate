@@ -102,7 +102,9 @@ function chatsOpen(count: number): string {
 
 /**
  * The rows of the "Ask agent" menu: a new chat with each agent that can start
- * (the picked one first), then the conversations already open. A new chat is
+ * (the picked one first), then the conversations already open. The view puts
+ * them under the headings "New chat with" and "Open chats", so a new-chat row
+ * is labelled with the agent's name alone. A new chat is
  * disabled at the limit — said before anything happens, since the user would
  * otherwise be taken out of the terminal for nothing. The description says where
  * the agent will work (the terminal's folder) and, for the home directory, that
@@ -119,12 +121,12 @@ export function askAgentRows(input: AskInput): AskRow[] {
 		kind: 'new' as const,
 		agent: agent.id,
 		icon: agentIcon(agent.id),
-		label: `New chat — ${agent.name}`,
+		label: agent.name,
 		description: atLimit ? chatsOpen(input.tabs.length) : `${where}${input.hasSelection ? ' · with the selected text' : ''}`,
 		disabled: atLimit,
 	}));
 	if (!rows.length) {
-		rows.push({ kind: 'none', icon: 'comment', label: 'New chat', description: 'No agent is installed and signed in', disabled: true });
+		rows.push({ kind: 'none', icon: 'comment', label: 'No agent available', description: 'No agent is installed and signed in', disabled: true });
 	}
 	for (const tab of input.tabs) {
 		const agent = tab.agent ? input.agents.find(a => a.id === tab.agent)?.name ?? tab.agent : 'New chat';
@@ -141,6 +143,37 @@ export function askAgentRows(input: AskInput): AskRow[] {
 		});
 	}
 	return rows;
+}
+
+/* ------------------------------------------------------------------ Send to chat */
+
+export interface ChatTargetRow {
+	readonly tabId: string;
+	readonly icon: string;
+	readonly label: string;
+	readonly description: string;
+	/** The conversation in front (behind the terminal). */
+	readonly checked: boolean;
+}
+
+/**
+ * The rows of "Send to chat": every open conversation, the one in front first,
+ * then the rest in strip order, each with its agent and state — and a note on
+ * the one this terminal is pinned to, whose agent can read it already.
+ */
+export function chatTargetRows(input: Pick<AskInput, 'terminal' | 'agents' | 'tabs' | 'frontTab'>): ChatTargetRow[] {
+	const ordered = [...input.tabs.filter(t => t.id === input.frontTab), ...input.tabs.filter(t => t.id !== input.frontTab)];
+	return ordered.map(tab => {
+		const agent = tab.agent ? input.agents.find(a => a.id === tab.agent)?.name ?? tab.agent : 'New chat';
+		const pinned = input.terminal.pinnedBy?.tabId === tab.id ? ' · this terminal is pinned here' : '';
+		return {
+			tabId: tab.id,
+			icon: tabStatusIcon(tab),
+			label: shortName(tab.title) || 'Chat',
+			description: `${agent} · ${tabStatusText(tab)}${pinned}`,
+			checked: tab.id === input.frontTab,
+		};
+	});
 }
 
 /* ------------------------------------------------------------------ the "+" menu */

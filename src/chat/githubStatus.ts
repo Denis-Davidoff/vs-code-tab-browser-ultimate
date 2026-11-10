@@ -49,6 +49,15 @@ export interface GithubRun {
 	readonly state: GithubRunState;
 	readonly updatedAt: string;
 	readonly current?: boolean;
+	/**
+	 * The workflow file the run came from (`.github/workflows/ci.yml`), only when
+	 * it has that shape: a run of a dynamic workflow (code scanning, Pages) has
+	 * no file in the repository, and the path is the network's, so nothing else
+	 * is passed on to be opened.
+	 */
+	readonly workflowPath?: string;
+	/** The commit the run ran on, for a link to the workflow file as it was then. */
+	readonly sha?: string;
 }
 
 export interface GithubStatus {
@@ -66,6 +75,11 @@ export interface GithubStatus {
 	readonly defaultBranch?: string;
 	/** The working folder's branch has an upstream on the remote (a pull request needs it pushed). */
 	readonly published?: boolean;
+	/**
+	 * Its upstream was deleted on the remote (`[gone]`): typically the branch of a pull request
+	 * already merged, so there is nothing left to open a pull request for.
+	 */
+	readonly upstreamGone?: boolean;
 	/** The branch's last commit subject: the title a new pull request starts with. */
 	readonly suggestedTitle?: string;
 }
@@ -79,11 +93,15 @@ export interface GithubCreatedPr {
 /**
  * Whether the tab offers to open a pull request for the working folder's
  * branch: one is checked out, it is not the default branch, and no open pull
- * request has it as its head.
+ * request has it as its head, and its remote branch was not deleted.
  */
 export function canOfferPullRequest(status: GithubStatus): boolean {
 	const branch = status.headBranch ?? status.branch;
 	if (!branch || !status.defaultBranch || branch === status.defaultBranch) { return false; }
+	// A merged pull request's branch, deleted on the remote: a disabled "Create pull request" stayed
+	// there for good, with nothing the user could do from it (reported). Publishing it again in the
+	// Branches window brings the offer back.
+	if (status.upstreamGone) { return false; }
 	const repo = (status.pushRepo ?? status.repo).toLowerCase();
 	return !status.prs.some(pr => pr.branch === branch && (pr.headRepo ?? status.repo).toLowerCase() === repo);
 }
@@ -128,7 +146,36 @@ export function parseCreatedPr(output: string): GithubCreatedPr | undefined {
 /** What `gh pr list --json` is asked for. */
 export const ghPrFields = 'number,title,url,author,headRefName,headRepository,headRepositoryOwner,isDraft,updatedAt,reviewDecision,statusCheckRollup';
 /** What `gh run list --json` is asked for. */
-export const ghRunFields = 'databaseId,name,displayTitle,url,headBranch,event,status,conclusion,updatedAt';
+export const ghRunFields = 'databaseId,name,displayTitle,url,headBranch,headSha,event,status,conclusion,updatedAt,workflowDatabaseId';
+/** What `gh workflow list --json` is asked for: `gh run list` names a run's workflow by id only. */
+export const ghWorkflowFields = 'id,path';
+
+/** A workflow file's path as GitHub reports it, kept only when it is a file directly in `.github/workflows`. */
+export function workflowPath(value: unknown): string | undefined {
+	if (typeof value !== 'string' || value.length > 300) { return undefined; }
+	return /^\.github\/workflows\/[^/\\\u0000-\u001f\u007f]+\.ya?ml$/i.test(value) ? value : undefined;
+}
+
+/** `gh workflow list --json id,path`: workflow id → its file. */
+export function parseGhWorkflows(json: string): Map<number, string> {
+	const out = new Map<number, string>();
+	const parsed: unknown = JSON.parse(json);
+	if (!Array.isArray(parsed)) { return out; }
+	for (const raw of parsed.slice(0, 500) as Record<string, unknown>[]) {
+		const id = typeof raw?.id === 'number' && Number.isSafeInteger(raw.id) ? raw.id : undefined;
+		const file = workflowPath(raw?.path);
+		if (id !== undefined && file) { out.set(id, file); }
+	}
+	return out;
+}
+
+/** The workflow file as it was at the run's commit, on GitHub. */
+export function workflowFileUrl(repo: string, run: Pick<GithubRun, 'workflowPath' | 'sha' | 'branch'>): string | undefined {
+	if (!run.workflowPath || !/^[\w.-]+\/[\w.-]+$/.test(repo)) { return undefined; }
+	const ref = run.sha ?? run.branch;
+	if (!ref) { return undefined; }
+	return `https://github.com/${repo}/blob/${ref.split('/').map(encodeURIComponent).join('/')}/${run.workflowPath.split('/').map(encodeURIComponent).join('/')}`;
+}
 
 export const githubListLimit = 30;
 
@@ -193,16 +240,20 @@ export function parseGhPullRequests(json: string, branch?: string): GithubPullRe
 	return out;
 }
 
-export function parseGhRuns(json: string, branch?: string): GithubRun[] {
+export function parseGhRuns(json: string, branch?: string, workflows?: ReadonlyMap<number, string>): GithubRun[] {
 	const out: GithubRun[] = [];
 	for (const raw of arrayOf(json) as Record<string, unknown>[]) {
 		const id = num(raw?.databaseId);
 		const url = httpsUrl(raw?.url);
 		if (!id || !url) { continue; }
 		const head = text(raw.headBranch, 250);
+		const workflowId = num(raw.workflowDatabaseId);
+		const file = workflowPath(raw.path) ?? (workflowId !== undefined ? workflows?.get(workflowId) : undefined);
+		const sha = typeof raw.headSha === 'string' && /^[0-9a-f]{40}$/i.test(raw.headSha) ? raw.headSha : undefined;
 		out.push({
 			id, url, name: text(raw.name), title: text(raw.displayTitle), branch: head, event: text(raw.event, 40),
 			state: runState(raw.status, raw.conclusion), updatedAt: text(raw.updatedAt, 40), ...(branch && head === branch ? { current: true } : {}),
+			...(file ? { workflowPath: file } : {}), ...(sha ? { sha } : {}),
 		});
 	}
 	return out;
@@ -233,7 +284,7 @@ export function parseApiRuns(json: string, branch?: string): GithubRun[] {
 	if (!Array.isArray(parsed?.workflow_runs)) { throw new Error('Not a run list.'); }
 	return parseGhRuns(JSON.stringify((parsed.workflow_runs as Record<string, unknown>[]).map(r => ({
 		databaseId: r?.id, name: r?.name, displayTitle: r?.display_title, url: r?.html_url, headBranch: r?.head_branch,
-		event: r?.event, status: r?.status, conclusion: r?.conclusion, updatedAt: r?.updated_at,
+		event: r?.event, status: r?.status, conclusion: r?.conclusion, updatedAt: r?.updated_at, path: r?.path, headSha: r?.head_sha,
 	}))), branch);
 }
 
@@ -251,4 +302,62 @@ export function pickGithubRemote<R>(remotes: readonly { name: string; url: strin
 	}
 	for (const r of remotes) { const repo = parse(r.url); if (repo) { return repo; } }
 	return undefined;
+}
+
+/**
+ * A REST validation error that names a field and a code but no message — what
+ * GitHub sends for a pull request whose head branch is not on the remote
+ * (`{ resource: 'PullRequest', field: 'head', code: 'invalid' }`), under the
+ * bare top-level "Validation Failed".
+ */
+export function githubFieldError(error: { field?: unknown; code?: unknown } | undefined): string | undefined {
+	if (!error || typeof error.field !== 'string') { return undefined; }
+	const code = typeof error.code === 'string' ? error.code : 'invalid';
+	if (error.field === 'head' && code === 'invalid') { return 'The branch is not on GitHub. Push it (Branches window → Publish), then try again.'; }
+	if (error.field === 'base' && code === 'invalid') { return 'The base branch is not on GitHub.'; }
+	return `Validation failed: ${error.field} is ${code.replace(/_/g, ' ')}.`;
+}
+
+/**
+ * An Actions run being watched from the GitHub tab's bell: the key it is known
+ * by in the host and the view (`owner/name#id`, the repository's case folded,
+ * since GitHub's is not significant).
+ */
+export function runWatchKey(repo: string, id: number): string {
+	return `${repo.toLowerCase()}#${id}`;
+}
+
+/** Fields `gh run view` is asked for when a watched run is polled. */
+export const ghWatchedRunFields = 'status,conclusion,displayTitle,name,url';
+
+/**
+ * One run as `gh run view --json` (`displayTitle`, `url`) or the REST API
+ * (`display_title`, `html_url`) describes it; `undefined` for anything else.
+ */
+export function parseWatchedRun(json: string): { state: GithubRunState; title: string; url?: string } | undefined {
+	let raw: Record<string, unknown>;
+	try { raw = JSON.parse(json) as Record<string, unknown>; } catch { return undefined; }
+	if (!raw || typeof raw !== 'object' || Array.isArray(raw) || typeof raw.status !== 'string') { return undefined; }
+	const url = httpsUrl(raw.url) || httpsUrl(raw.html_url);
+	return {
+		state: runState(raw.status, raw.conclusion),
+		title: text(raw.displayTitle) || text(raw.display_title) || text(raw.name),
+		...(url ? { url } : {}),
+	};
+}
+
+/** Whether a run is still to finish: what the bell is offered for, and what keeps it being polled. */
+export function runInFlight(state: GithubRunState): boolean {
+	return state === 'running' || state === 'queued';
+}
+
+/** The notification's line for a run that has ended. */
+export function runEndedText(state: GithubRunState): string {
+	switch (state) {
+		case 'success': return 'Finished successfully.';
+		case 'failure': return 'Failed.';
+		case 'cancelled': return 'Was cancelled.';
+		case 'skipped': return 'Was skipped.';
+		default: return 'Finished.';
+	}
 }

@@ -73,6 +73,7 @@ export const COMMANDS = {
 	stopAgentProcess: editor('Agent process controls are available only in VS Code.'),
 	watchAgentProcesses: editor('The process monitor runs only in VS Code.'),
 	chatFocus: editor('Keybindings belong to VS Code.'),
+	composerClipboard: machine('The paste button reads the editor\u2019s own clipboard.'),
 	inspectAgentProcess: editor('Process details open only in VS Code: the command line may carry credentials.'),
 
 	// The conversation.
@@ -140,6 +141,10 @@ export const COMMANDS = {
 	gitRemoteAction: both('git'), restoreBranchStash: both('git'),
 	// Bound by the host to the conversation's own working folder.
 	githubStatus: both('git'), githubCreatePr: both('git'),
+	// The bell plays and notifies on the editor's machine.
+	githubWatchRun: editor('Actions runs are watched from VS Code.'),
+	// The file on the editor's own disk; Chrome and the website open it on GitHub instead.
+	openWorkflowFile: editor('The workflow file opens on GitHub here.'),
 	// Browsing and editing the working folder; the forms that act on the editor's own window,
 	// clipboard or other files of its machine (open, reveal, copy path, drop, delete) are refused by the host.
 	files: { feature: 'workdir', chrome: 'mixed', exchange: 'mixed' },

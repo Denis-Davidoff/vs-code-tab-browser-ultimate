@@ -34,6 +34,11 @@ export interface TurnInput {
 	readonly ultracode?: boolean;
 	readonly text: string;
 	readonly images: readonly TurnImage[];
+	/**
+	 * The message's own id, where the agent can withdraw a message it has not
+	 * taken in yet (Claude Code: the stream-json `uuid`, see `withdraw`).
+	 */
+	readonly uuid?: string;
 }
 
 /** One conversation. Holds at most one live CLI process or thread. */
@@ -62,6 +67,17 @@ export interface AgentSession extends vscode.Disposable {
 	 * skipped with `allow` false.
 	 */
 	answer(id: string, allow: boolean, answers?: QuestionAnswers): void;
+	/**
+	 * Takes back a message sent during a turn (`TurnInput.uuid`) that the agent
+	 * has not taken in yet. Resolves whether it was withdrawn: `false` when it is
+	 * already part of a turn, or the agent cannot say.
+	 */
+	withdraw?(uuid: string): Promise<boolean>;
+	/**
+	 * Whether `withdraw` works with the agent as it runs now, where that has to
+	 * be asked of it (Claude Code); absent means it always does.
+	 */
+	readonly canWithdraw?: boolean;
 }
 
 /**

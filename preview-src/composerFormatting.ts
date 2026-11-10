@@ -25,6 +25,63 @@ export function composerListItem(line: string): ComposerListItem | undefined {
 		content: match[4], prefixLength: match[1].length + match[2].length + match[3].length };
 }
 
+/**
+ * An ordered list starts only at `1` or `a`/`A`: an item with a later number or
+ * letter is a list item only when it continues a list of the same kind (number
+ * or letter case, and delimiter) at the same indent above it. Blank lines and
+ * deeper-nested items between are skipped. `above` is the lines before the
+ * item's line, nearest last.
+ */
+export function composerListContinues(above: readonly string[], item: ComposerListItem): boolean {
+	return continuesAt(above, above.length, item, new Map());
+}
+
+/**
+ * `composerListContinues` for every line of one text, sharing what it learns: `continues(index, item)`
+ * answers for the item on `lines[index]`. Asked line by line, as a sent prompt is drawn, a flat list
+ * costs one look back per line; the plain function would walk back to item 1 from every line, copying
+ * the lines above at each step, which made a 3 000-item list take seconds on every redraw.
+ */
+export function composerListChecker(lines: readonly string[]): (index: number, item: ComposerListItem) => boolean {
+	const memo = new Map<number, boolean>();
+	return (index, item) => continuesAt(lines, index, item, memo);
+}
+
+/** Whether `item` continues a list in `lines[0 .. end)`; `memo` holds the answer for list items already judged, by line. */
+function continuesAt(lines: readonly string[], end: number, item: ComposerListItem, memo: Map<number, boolean>): boolean {
+	if (item.number === undefined || item.number === 1) { return true; }
+	const width = (indent: string) => indent.replace(/\t/g, '    ').length;
+	const own = width(item.indent);
+	for (let i = end - 1; i >= 0; i--) {
+		if (!lines[i].trim()) { continue; }
+		const prior = composerListItem(lines[i]);
+		if (!prior) { return false; }
+		const depth = width(prior.indent);
+		if (depth > own) { continue; }
+		if (depth < own) { return false; }
+		if (prior.number === undefined || prior.alpha !== item.alpha || prior.delimiter !== item.delimiter || prior.number >= item.number) { return false; }
+		let valid = memo.get(i);
+		if (valid === undefined) { valid = continuesAt(lines, i, prior, memo); memo.set(i, valid); }
+		return valid;
+	}
+	return false;
+}
+
+/** The number an ordered `item` takes where it stands: one past the same list's item above, else 1. */
+function composerNumberAt(above: readonly string[], item: ComposerListItem): number {
+	const width = (indent: string) => indent.replace(/\t/g, '    ').length;
+	const own = width(item.indent);
+	for (let i = above.length - 1; i >= 0; i--) {
+		if (!above[i].trim()) { continue; }
+		const prior = composerListItem(above[i]);
+		if (!prior || width(prior.indent) < own) { return 1; }
+		if (width(prior.indent) > own) { continue; }
+		const same = prior.number !== undefined && prior.alpha === item.alpha && prior.delimiter === item.delimiter;
+		return same ? prior.number! + 1 : 1;
+	}
+	return 1;
+}
+
 /** The marker of item `n` of the list `item` belongs to; a letter list stops at z. */
 export function composerMarker(item: ComposerListItem, n: number): string {
 	if (item.number === undefined) { return item.marker; }
@@ -79,11 +136,21 @@ export function composerListEdit(value: string, start: number, end: number, key:
 		const lines = value.slice(lineStart, blockEnd).split('\n');
 		if (lines.some(line => line.trim() && !composerListItem(line))) { return undefined; }
 		const deltas: number[] = [];
+		// A moved ordered item takes the number its new place gives it: 1 (or a)
+		// starting a nested list, the next one continuing the list it joins.
+		const above = lineStart ? value.slice(0, lineStart - 1).split('\n') : [];
 		const text = lines.map(line => {
-			if (!line.trim()) { deltas.push(0); return line; }
+			if (!line.trim()) { deltas.push(0); above.push(line); return line; }
 			const remove = shift ? (/^\t/.test(line) ? 1 : /^ {1,2}/.exec(line)?.[0].length ?? 0) : 0;
-			deltas.push(shift ? -remove : 2);
-			return shift ? line.slice(remove) : `  ${line}`;
+			let moved = shift ? line.slice(remove) : `  ${line}`;
+			const item = composerListItem(moved);
+			if (item?.number !== undefined && moved !== line) {
+				const marker = composerMarker(item, composerNumberAt(above, item));
+				moved = item.indent + marker + moved.slice(item.indent.length + item.marker.length);
+			}
+			deltas.push(moved.length - line.length);
+			above.push(moved);
+			return moved;
 		}).join('\n');
 		return { start: lineStart, end: blockEnd, text,
 			selectionStart: Math.max(lineStart, start + deltas[0]), selectionEnd: Math.max(lineStart, end + deltas.reduce((a, b) => a + b, 0)) };
@@ -92,6 +159,8 @@ export function composerListEdit(value: string, start: number, end: number, key:
 	// A line typed with leading whitespace does not start a list; it continues one
 	// only when it is nested inside a list item above it (Tab made the indent).
 	if (shift || (item.indent && !insideComposerList(value, lineStart))) { return undefined; }
+	// Enter starts an ordered list only from 1 or a; Tab may still shift any item.
+	if (!composerListContinues(lineStart ? value.slice(0, lineStart - 1).split('\n') : [], item)) { return undefined; }
 	if (start < lineStart + item.prefixLength) { return { start, end, text: '\n', selectionStart: start + 1, selectionEnd: start + 1 }; }
 	if (!item.content.trim() && start === end) {
 		return { start: lineStart, end: stop, text: '', selectionStart: lineStart, selectionEnd: lineStart };

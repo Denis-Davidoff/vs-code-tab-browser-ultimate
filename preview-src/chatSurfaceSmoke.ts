@@ -122,7 +122,7 @@ async function run() {
 		await show(shellState);
 		const tabs = [...doc.querySelectorAll<HTMLButtonElement>('.composer-tab')];
 		const bash = tabs.find(b => b.textContent?.startsWith('Bash'))!;
-		check(bash && tabs.some(b => b.textContent === 'Conversation') && !tabs.some(b => b.textContent === 'History'), `${surface}: Bash/Conversation labels missing`);
+		check(bash && tabs.some(b => b.textContent === 'Prompts') && !tabs.some(b => b.textContent === 'History'), `${surface}: Bash/Prompts labels missing`);
 		bash.click(); await wait();
 		const panel = doc.querySelector<HTMLElement>('.composer-bash')!;
 		check(!panel.hidden, `${surface}: Bash tab did not open`);

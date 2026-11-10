@@ -21,9 +21,9 @@
  * A leaf: no `vscode`, no relative value import, so `npm test` loads it directly.
  */
 
-export type TerminalInsertKind = 'page' | 'element' | 'screenshot' | 'file' | 'selection' | 'video' | 'annotation';
+export type TerminalInsertKind = 'page' | 'element' | 'screenshot' | 'file' | 'folder' | 'selection' | 'video' | 'annotation';
 
-export const terminalInsertKinds: readonly TerminalInsertKind[] = ['page', 'element', 'screenshot', 'file', 'selection', 'video', 'annotation'];
+export const terminalInsertKinds: readonly TerminalInsertKind[] = ['page', 'element', 'screenshot', 'file', 'folder', 'selection', 'video', 'annotation'];
 
 export function isTerminalInsertKind(value: unknown): value is TerminalInsertKind {
 	return typeof value === 'string' && (terminalInsertKinds as readonly string[]).includes(value);

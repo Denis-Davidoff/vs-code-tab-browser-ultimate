@@ -7,11 +7,18 @@ export function timedInformation(message: string): void {
 		const notification = vscode.window.withProgress({
 			location: vscode.ProgressLocation.Notification,
 			title: plainInNotification(plainInLabel(message, 240), 240),
-			cancellable: false,
-		}, progress => {
+			// Cancellable only so the toast gets a button that closes it: a native toast cannot be
+			// moved, and in the bottom right corner it covers the chat's Branches button.
+			cancellable: true,
+		}, (progress, token) => {
 			// This announces completed work. The task lifetime controls when VS Code removes the toast.
 			progress.report({ increment: 100 });
-			return new Promise<void>(resolve => setTimeout(resolve, 10_000));
+			return new Promise<void>(resolve => {
+				// Whichever ends it first lets go of the other: the timer, or the close button's listener.
+				let listener: { dispose(): void } | undefined;
+				const timer = setTimeout(() => { listener?.dispose(); resolve(); }, 10_000);
+				listener = token?.onCancellationRequested?.(() => { clearTimeout(timer); listener?.dispose(); resolve(); });
+			});
 		});
 		// Notification delivery must never turn a successful operation into a reported failure.
 		void Promise.resolve(notification).catch(() => undefined);

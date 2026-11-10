@@ -35,7 +35,7 @@ const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
 const format = (message: string, args: unknown[]) => message.replace(/\{(\d+)\}/g, (_m, i) => String(args[Number(i)]));
 
-interface FakeTerminal { id: string; name: string; cwd: string; agent?: string; status: 'running' | 'exited'; exitCode?: number; size: { cols: number; rows: number }; agentControlAllowed: boolean }
+interface FakeTerminal { id: string; name: string; cwd: string; agent?: string; status: 'running' | 'exited'; exitCode?: number; size: { cols: number; rows: number }; agentControlAllowed: boolean; markRead?: () => boolean }
 interface FakeTab { id: string; started: boolean; title?: string; chat: { id: string; agent: string; references?: unknown }; entries: { kind: string; text: string }[]; attachments: { chip: { kind: string; label: string }; text?: string }[]; folder?: string | null; cwd: string; push(entry: { kind: string; text: string }): void; setFolder(folder: string | undefined): void }
 
 function fakeTab(id: string, started = true): FakeTab {
@@ -70,6 +70,8 @@ function rig() {
 			find: (id: unknown) => typeof id === 'string' ? terminals.get(id) : undefined,
 			close: (id: string) => { calls.push(`close ${id}`); terminals.delete(id); },
 			size: 0,
+			select: (id: string) => { calls.push(`front ${id}`); return true; },
+			setFront: (id: string) => { calls.push(`front ${id}`); },
 			names: () => [...terminals.values()].map(t => t.name),
 			create: async (id: string, name: string, cwd: string, agent: unknown, _starter: unknown, options: unknown) => {
 				created.push({ id, name, cwd, agent, options });
@@ -86,6 +88,7 @@ function rig() {
 		_terminalSupport: () => supportReason ? { available: false, reason: supportReason } : { available: true, limit, agents: [] },
 		_terminalStarter: () => undefined,
 		_post: () => { posts.push('own'); },
+		_postMessage: (m: { type: string; dock?: boolean }) => { calls.push(m.type === 'focusInput' && m.dock ? 'dock' : m.type); },
 		_leaveTerminal: () => { calls.push('leave'); return true; },
 		_focusInput: () => { calls.push('focus'); },
 		_selectTab: (id: string) => { calls.push(`select ${id}`); },
@@ -107,11 +110,11 @@ function rig() {
 		ChatViewProvider[name] = lift(source, name, context);
 	}
 	// A provider instance: `this` for the lifted methods.
-	for (const name of ['_pinTerminalTo', '_pinTerminalMessage', '_terminalGone', '_closeTerminal', '_terminalAskAgent', 'newTerminal', '_pinChips', '_pinnedSummary', '_terminalSummary']) {
+	for (const name of ['_pinTerminalTo', '_pinTerminalMessage', '_terminalGone', '_closeTerminal', '_terminalAskAgent', 'newTerminal', '_pinChips', '_pinnedSummary', '_terminalSummary', '_syncTerminalOwner']) {
 		surface[name] = lift(source, name, context);
 	}
 	const add = (id: string, over: Partial<FakeTerminal> = {}): FakeTerminal => {
-		const t: FakeTerminal = { id, name: `Terminal ${id}`, cwd: '/proj', status: 'running', size: { cols: 100, rows: 30 }, agentControlAllowed: true, ...over };
+		const t: FakeTerminal = { id, name: `Terminal ${id}`, cwd: '/proj', status: 'running', size: { cols: 100, rows: 30 }, agentControlAllowed: true, markRead: () => false, ...over };
 		(surface._terminals as { find: (id: string) => unknown }).find(id) ?? terminals.set(id, t);
 		return t;
 	};
@@ -246,7 +249,7 @@ suite('what the state shows of pins', () => {
 });
 
 suite('Ask agent', () => {
-	test('a new conversation: pinned, in the terminal\'s folder, with the selection as context, focused, nothing sent', async () => {
+	test('a new conversation: pinned, in the terminal\'s folder, with the selection as context, docked under the terminal, nothing sent', async () => {
 		const r = rig();
 		r.add('t1', { name: 'dev', cwd: '/proj' });
 		await r.surface._terminalAskAgent('t1', { kind: 'new', agent: 'codex' }, 'error: boom\n');
@@ -258,7 +261,11 @@ suite('Ask agent', () => {
 		assert.equal(tab.attachments.length, 1);
 		assert.equal(tab.attachments[0].chip.kind, 'selection');
 		assert.match(tab.attachments[0].text ?? '', /error: boom/);
-		assert.deepEqual(r.calls.filter(c => c !== 'leave'), ['add codex', 'remember codex', 'focus']);
+		// The terminal stays in front, the conversation becomes the active one and docks under it.
+		// The dock focus is held for after the next state, so the terminal cannot take the keyboard back (#542).
+		assert.deepEqual(r.calls, ['add codex', 'remember codex', 'front t1']);
+		assert.equal(r.surface._dockFocusAfterState, true);
+		assert.equal(r.surface._active, tab);
 		assert.deepEqual(tab.entries, []);
 	});
 
@@ -294,13 +301,15 @@ suite('Ask agent', () => {
 		assert.deepEqual(r.calls, []);
 	});
 
-	test('an open conversation gets the pin and the context and is selected; one that is gone is refused', async () => {
+	test('an open conversation gets the pin and the context and docks under the terminal; one that is gone is refused', async () => {
 		const r = rig();
 		r.add('t1', { name: 'dev' });
 		await r.surface._terminalAskAgent('t1', { kind: 'tab', tabId: 'b' }, 'why?');
 		assert.equal(r.pins.owner('t1'), 'b');
 		assert.equal(r.tabs[1].attachments.length, 1);
-		assert.deepEqual(r.calls, ['select b', 'leave', 'focus']);
+		assert.deepEqual(r.calls, ['front t1']);
+		assert.equal(r.surface._dockFocusAfterState, true);
+		assert.equal(r.surface._active, r.tabs[1]);
 		await r.surface._terminalAskAgent('t1', { kind: 'tab', tabId: 'gone' }, '');
 		assert.match(r.refusals[0], /no longer open/);
 		assert.equal(r.pins.owner('t1'), 'b');

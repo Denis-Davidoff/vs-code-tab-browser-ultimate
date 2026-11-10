@@ -20,8 +20,10 @@ export interface SwipeResult {
 }
 
 export const swipeGapMs = 200;
+/** A slow drag the fingers still hold (no events while they rest) keeps its pull this long before it lets go. */
+export const holdMs = 350;
 const axisPx = 6;
-const slowStepPx = 56;
+const slowStepPx = 44;
 const fastStepPx = 28;
 const flickPx = 24;
 const flickSpeed = 0.6;
@@ -52,7 +54,10 @@ export class ComposerSwipe {
 
 	/** `dx` as the browser reports it: with natural scrolling, fingers moving right are negative. */
 	feed(dx: number, dy: number, t: number): SwipeResult {
-		if (t - this._last > swipeGapMs) { this._start(); }
+		const gap = t - this._last;
+		// A pause is not an end while a pull is held: a trackpad sends nothing while the fingers rest.
+		const holding = this._axis === 'x' && !this._locked && t >= this._lockUntil && this._acc !== 0 && gap <= holdMs;
+		if (gap > swipeGapMs && !holding) { this._start(); }
 		this._last = t;
 		if (this._axis === undefined) {
 			this._sx += Math.abs(dx);

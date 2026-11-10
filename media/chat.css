@@ -39,7 +39,9 @@
 	--border-strong: color-mix(in srgb, var(--vscode-foreground) 14%, transparent);
 	--soft: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
 	--soft-2: color-mix(in srgb, var(--vscode-foreground) 9%, transparent);
-	--code-bg: var(--vscode-textCodeBlock-background, color-mix(in srgb, var(--vscode-foreground) 6%, transparent));
+	/* Light Modern's textCodeBlock-background is the side bar's own #f8f8f8, so a code box drawn
+	   with it alone vanishes there; a touch of the foreground keeps it visible in every theme. */
+	--code-bg: color-mix(in srgb, var(--vscode-foreground) 4%, var(--vscode-textCodeBlock-background, transparent));
 	--surface: var(--vscode-input-background);
 	--elevated: var(--vscode-menu-background, var(--vscode-editorWidget-background));
 	--accent: var(--vscode-focusBorder);
@@ -95,7 +97,8 @@
 	--ctl-chevron-img: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 3.5l3 3 3-3' fill='none' stroke='%23CCCCCC' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
-body.vscode-light {
+/* The chat's own Appearance choice (`data-theme`) outranks the editor's theme class. */
+:root[data-theme="light"] body, :root:not([data-theme]) body.vscode-light {
 	--ctl-chevron-img: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 3.5l3 3 3-3' fill='none' stroke='%23616161' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
@@ -184,6 +187,31 @@ body {
 	font-size: var(--vscode-chat-font-size, var(--vscode-font-size));
 	color: var(--fg);
 	background: var(--bg);
+}
+
+/* VS Code prepends default styles to every webview (`@layer vscode-default` in its pre/index.html):
+   `blockquote` gets textBlockQuote-background, every `code` textPreformat-background and padding,
+   `kbd` a keycap. They follow the editor's theme, not ours, so a light chat over a dark editor
+   drew a dark quote with dark text, and a dark strip under the code of every code block. Our
+   unlayered rules win over that layer whatever their specificity, so each element is set here. */
+code {
+	font-family: var(--mono);
+	color: inherit;
+	background: none;
+	padding: 0;
+	border-radius: 0;
+}
+
+kbd {
+	font-family: var(--mono);
+	font-size: 0.9em;
+	padding: 0 4px;
+	color: var(--fg);
+	background: var(--soft);
+	border: 1px solid var(--border-strong);
+	border-bottom-width: 2px;
+	border-radius: var(--ctl-radius-sm);
+	box-shadow: none;
 }
 
 #app {
@@ -630,12 +658,26 @@ button {
 	flex: none;
 	width: 6px;
 	height: 6px;
-	margin-top: calc(0.775em - 3px);
+	/* centred on the title's first line, whatever the line height (asked for) */
+	margin-top: calc((1lh - 6px) / 2);
 	border-radius: 50%;
 	background: var(--fg-3);
 }
 
-.agents-running-dot.running { background: var(--accent); }
+/* a running agent's dot breathes slowly (asked for) */
+.agents-running-dot.running {
+	background: var(--accent);
+	animation: agents-running-breathe 1.8s ease-in-out infinite;
+}
+
+@keyframes agents-running-breathe {
+	0%, 100% { opacity: 1; transform: scale(1); }
+	50% { opacity: 0.3; transform: scale(0.8); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.agents-running-dot.running { animation: none; }
+}
 .agents-running-dot.done { background: var(--ok); }
 .agents-running-dot.failed { background: var(--bad); }
 .agents-running-dot.stopped { background: var(--warn); }
@@ -1297,8 +1339,12 @@ button {
 .markdown blockquote {
 	position: relative;
 	margin: 1.26em 0;
-	padding: 6px 30px 6px 14px;
+	padding: 8px 30px 8px 14px;
+	border: 0;
 	border-left: 3px solid var(--vscode-charts-yellow, #cca700);
+	border-radius: 0 var(--ds-radius) var(--ds-radius) 0;
+	/* our own tint, never VS Code's textBlockQuote-background (see `code` near the top) */
+	background: color-mix(in srgb, var(--vscode-charts-yellow, #cca700) 7%, transparent);
 	color: color-mix(in srgb, var(--vscode-foreground) 88%, transparent);
 }
 
@@ -1682,7 +1728,9 @@ button {
 	display: flex;
 	flex-direction: column;
 	border-radius: var(--radius-lg);
-	/* The message part a little darker than the button row below it (.toolbar). */
+	/* The composer tabs' panels (Skills, Activity, …) a little darker than the button row below it
+	   (.toolbar); .composer-list .cl-head repeats this colour. The message part itself is darker
+	   still, on .input-area (asked for). */
 	background: color-mix(in srgb, var(--surface) 92%, #000);
 	border: 1px solid var(--vscode-input-border, var(--border-strong));
 	box-shadow: 0 4px 16px 0 #0000000d, 0 1px 2px #0000000a;
@@ -1751,7 +1799,13 @@ button {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) 40px;
 	min-height: 68px;
+	/* The message part darker than the composer's tab panels above it (18 % black against their
+	   8 %, asked for). On the Chat tab it is the composer's top, so it takes the rounded corners
+	   (the composer's radius less its 1 px border). */
+	background: color-mix(in srgb, var(--surface) 82%, #000);
+	border-radius: calc(var(--radius-lg) - 1px) calc(var(--radius-lg) - 1px) 0 0;
 }
+.composer:is(.skills-mode, .list-mode) > .input-area { border-radius: 0; }
 
 .input-actions {
 	display: flex;
@@ -2341,6 +2395,22 @@ button {
 	background: var(--soft-2);
 	color: var(--fg);
 	box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+/* Empty box, text on the clipboard: the same outlined disc as Stop. */
+.send.paste {
+	background: var(--soft-2);
+	color: var(--fg);
+	box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.send.paste .paste-glyph {
+	display: block;
+	flex: none;
+}
+
+.send.paste:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--fg) 14%, transparent);
 }
 
 /* Pressed and waiting for the turn to end: dimmed and pulsing, still clickable. */
@@ -2993,7 +3063,8 @@ button {
 	line-height: 1;
 }
 
-.tab-kind.status-working { color: var(--ok); animation: tab-kind-pulse 1.4s ease-in-out infinite; }
+.tab-kind.status-working,
+.tab-overflow-count.status-working { color: var(--ok); animation: tab-kind-pulse 1.4s ease-in-out infinite; }
 .tab-kind.status-waiting { color: var(--warn); animation: blink 1s linear infinite; }
 .tab-kind.status-unread { color: var(--vscode-charts-blue, var(--accent)); }
 .tab-kind.status-failed { color: var(--vscode-charts-orange, #d18616); }
@@ -4028,17 +4099,45 @@ button {
 	font-size: 12px;
 }
 
+/* The queued message's × is inside its box, at the right and centred on it —
+   asked for: at the end of the note under the box it was small and far from
+   what it removes. The box keeps room for it so text never runs under it. */
+.pending-body {
+	position: relative;
+}
+
+.prompt.pending-send.queue .bubble {
+	padding-right: 38px;
+}
+
 .pending-remove {
-	margin-left: auto;
-	padding: 1px;
+	position: absolute;
+	top: 50%;
+	right: 6px;
+	transform: translateY(-50%);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	padding: 0;
 	border: none;
-	border-radius: 4px;
+	border-radius: 6px;
 	background: transparent;
-	color: inherit;
+	color: var(--fg-3);
 	cursor: pointer;
 }
 
-.pending-remove:hover {
+.pending-remove .codicon {
+	font-size: 14px;
+}
+
+.pending-body:hover .pending-remove {
+	color: var(--fg-2, var(--fg));
+}
+
+.pending-remove:hover,
+.pending-remove:focus-visible {
 	background: var(--soft-2);
 	color: var(--fg);
 }
@@ -5138,6 +5237,7 @@ button {
 .git-branch-sync-actions.form-actions { flex-direction: row; justify-content: flex-end; gap: 4px; padding: 2px; }
 .git-branch-sync-button { display: flex; align-items: center; gap: 8px; width: 100%; box-sizing: border-box; border: 0; border-radius: 4px; background: transparent; color: var(--fg); font: inherit; padding: 5px 6px; text-align: left; cursor: pointer; }
 .git-branch-sync-button:hover { background: var(--vscode-list-hoverBackground); }
+.git-branch-sync-button .git-branch-sync-external { margin-left: auto; opacity: 0.7; }
 .git-branch-remote { margin: 2px 6px; font: inherit; color: var(--fg); background: var(--vscode-dropdown-background); border: 1px solid var(--vscode-dropdown-border, transparent); border-radius: 4px; padding: 2px 4px; }
 .git-branch-empty { padding: 12px 6px; color: var(--fg-3); }
 
@@ -6305,7 +6405,11 @@ textarea.form-input {
 .terminal-stage {
 	position: relative;
 	flex: 1;
-	min-height: 0;
+	/* About five rows of text at the default 13px font, whatever opens below it (asked for): a
+	   composer tab's panel (Skills, Activity, …) under a docked chat used to squeeze the stage to
+	   nothing, leaving only the terminal's toolbar. The docked messages give way first (see
+	   `.terminal-main > .thread`). */
+	min-height: 84px;
 }
 
 .terminal-host {
@@ -6314,17 +6418,21 @@ textarea.form-input {
 }
 
 .terminal-toolbar {
+	/* One compact row (asked for: at least a quarter lower than the 36 px row it was). */
+	--terminal-tool-h: 24px;
 	flex: none;
 	display: grid;
 	grid-template-columns: 1fr auto 1fr;
 	align-items: center;
 	gap: var(--ctl-gap-sm);
-	min-height: var(--ctl-h-lg);
-	padding: 4px 8px;
+	padding: 2px 6px;
 	border-top: 1px solid var(--border);
-	background: var(--terminal-background);
+	/* A shade darker than the terminal itself (asked for), so the strip reads as the terminal's own
+	   foot rather than more terminal text. */
+	background: color-mix(in srgb, var(--terminal-background) 80%, #000);
 	color: var(--fg-2);
 	font-size: var(--ctl-font);
+	overflow: hidden;
 }
 
 .terminal-toolbar [hidden],
@@ -6335,11 +6443,27 @@ textarea.form-input {
 
 .terminal-toolbar-status {
 	flex: none;
-	color: var(--fg-3);
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	height: 20px;
+	padding: 0 8px 0 6px;
+	border-radius: var(--ds-radius-pill);
+	background: var(--soft-2);
+	color: var(--fg-2);
 	white-space: nowrap;
 }
 
+.terminal-toolbar-status .codicon { font-size: 12px; }
+
+/* A non-zero exit reads as a failure, without shouting. */
+.terminal-toolbar-status.failed {
+	background: color-mix(in srgb, var(--bad) 14%, transparent);
+	color: var(--bad);
+}
+
 .terminal-toolbar-group {
+	flex-wrap: nowrap;
 	display: flex;
 	align-items: center;
 	gap: var(--ctl-gap-sm);
@@ -6405,15 +6529,67 @@ textarea.form-input {
 	align-items: center;
 	justify-content: center;
 	gap: 5px;
-	min-width: var(--ctl-h);
-	height: var(--ctl-h);
-	padding: 0 8px;
-	border-radius: var(--ctl-radius);
+	min-width: var(--terminal-tool-h);
+	height: var(--terminal-tool-h);
+	padding: 0 6px;
+	border-radius: 7px;
 	background: transparent;
 	color: var(--fg-2);
 	font: inherit;
 	white-space: nowrap;
 	cursor: pointer;
+	transition: background-color .12s ease, color .12s ease, opacity .12s ease, transform .08s ease;
+}
+
+.terminal-tool .codicon {
+	font-size: 16px;
+	line-height: 1;
+}
+
+.terminal-tool-label { line-height: 1; }
+
+/* Pressed: a firmer background and a hair of travel, so a click is felt. */
+.terminal-tool:active {
+	background: color-mix(in srgb, var(--vscode-foreground) 16%, transparent);
+	transform: translateY(.5px);
+}
+
+/* Ask agent is the row's main action: its spark carries the accent. */
+.terminal-tool-ask .codicon { color: var(--accent); }
+
+/* Scroll to bottom says something only when there is somewhere to go. */
+.terminal-tool-bottom { position: relative; }
+.terminal-tool-bottom.at-bottom { opacity: .4; }
+.terminal-tool-bottom.at-bottom:hover { background: transparent; color: var(--fg-2); cursor: default; }
+.terminal-tool-bottom.has-new { color: var(--accent); }
+.terminal-tool-dot {
+	display: none;
+	position: absolute;
+	top: 3px;
+	right: 3px;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--accent);
+	box-shadow: 0 0 0 1.5px var(--terminal-background);
+}
+.terminal-tool-bottom.has-new .terminal-tool-dot { display: block; }
+
+/* The messages toggle, while the conversation is shown: a selected look, like a toolbar's own toggles. */
+.terminal-tool-messages[aria-pressed="true"] {
+	background: var(--vscode-inputOption-activeBackground, var(--soft-2));
+	color: var(--vscode-inputOption-activeForeground, var(--fg));
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.terminal-tool { transition: none; }
+	.terminal-tool:active { transform: none; }
+}
+
+/* An icon alone is a square with rounded corners (asked for), not a padded rectangle. */
+.terminal-tool.icon-only {
+	width: var(--terminal-tool-h);
+	padding: 0;
 }
 
 .terminal-tool:hover {
@@ -6426,7 +6602,35 @@ textarea.form-input {
 	outline-offset: var(--ctl-ring-offset);
 }
 
-.terminal-tool[aria-pressed="true"] {
+/* Watch only: a small switch after its label; the eye is drawn in the accent colour while it is on. */
+.terminal-switch {
+	position: relative;
+	flex: none;
+	width: 22px;
+	height: 12px;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--fg) 22%, transparent);
+	transition: background .15s;
+}
+.terminal-switch::after {
+	content: "";
+	position: absolute;
+	top: 2px;
+	left: 2px;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--vscode-editor-background, #fff);
+	transition: transform .15s;
+}
+.terminal-tool-watch[aria-checked="true"] .terminal-switch { background: var(--accent); }
+.terminal-tool-watch[aria-checked="true"] .terminal-switch::after { transform: translateX(10px); }
+.terminal-tool-watch[aria-checked="true"] > .codicon { color: var(--accent); }
+@media (prefers-reduced-motion: reduce) {
+	.terminal-switch, .terminal-switch::after { transition: none; }
+}
+
+.terminal-tool-lease[aria-pressed="true"] {
 	color: var(--vscode-editorWarning-foreground, var(--fg));
 }
 
@@ -6442,12 +6646,25 @@ textarea.form-input {
 	.terminal-agent-mark {
 		padding: 0 6px;
 	}
+	.terminal-tool {
+		width: var(--terminal-tool-h);
+		padding: 0;
+	}
+	/* The Watch only button holds an eye and a 22px switch, which do not fit a square: let it take
+	   their width, or the switch hangs outside the button's hit area. */
+	.terminal-tool.terminal-tool-watch {
+		width: auto;
+		padding: 0 4px;
+	}
 }
 
 @media (pointer: coarse) {
 	.terminal-tool {
 		min-width: 40px;
 		height: 40px;
+	}
+	.terminal-tool.icon-only {
+		width: 40px;
 	}
 }
 
@@ -6664,6 +6881,24 @@ body.vv-locked {
 	.terminal-agent-mark.typing .terminal-agent-dot { animation: none; }
 }
 
+/* A group's heading inside a menu: a hairline above it, except for the first group. */
+.menu-group-heading {
+	margin-top: 4px;
+	padding-top: 7px;
+	border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+	font-weight: 600;
+	text-transform: uppercase;
+	font-size: 0.72em;
+	letter-spacing: 0.06em;
+}
+.menu-heading + .menu-group-heading,
+.menu-note + .menu-group-heading,
+.menu > .menu-group-heading:first-child {
+	margin-top: 0;
+	padding-top: 4px;
+	border-top: 0;
+}
+
 .menu-separator {
 	height: 1px;
 	margin: 4px 6px;
@@ -6701,11 +6936,14 @@ body.vv-locked {
 /* ---------------------------------------------------------------- Chat / Skills tabs above the composer */
 
 .composer-tabs {
+	position: relative; /* the sliding underline is positioned against the row */
 	display: flex;
 	gap: 14px;
 	padding: 0 6px;
-	margin-bottom: 6px;
-	border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 9%, transparent);
+	/* 2px (was 6, halved on request): with the underline 2px off the row's foot, the active tab's
+	   underline sits 4px above the composer's border. */
+	margin-bottom: 2px;
+	/* No bottom border across the row (removed on request): only the active tab's underline. */
 	overflow-x: auto;
 	/* overflow-x: auto makes y auto too, and the active underline (bottom: -1px) overflowed
 	   by a pixel: a vertical wheel over the row scrolled it up and down. */
@@ -6727,17 +6965,22 @@ body.vv-locked {
 	transition: color .12s;
 }
 
-.composer-tab::after {
-	content: '';
+.composer-tab-indicator {
 	position: absolute;
-	left: 0; right: 0; bottom: -1px;
+	left: 0;
+	bottom: 2px; /* raised 2px off the row's foot, on request */
+	/* A capsule (asked for): both ends rounded, top and bottom flat. 2px tall (asked for, after
+	   3px); the round ends are subtle at this height. */
 	height: 2px;
-	border-radius: 2px 2px 0 0;
-	background: transparent;
-	transition: background .12s;
+	border-radius: 999px;
+	background: var(--vscode-focusBorder);
+	pointer-events: none;
+	/* One element for the row, moved by JS: it slides from the tab it left to the one it reaches,
+	   and during a swipe it is painted part of the way (see paintIndicator in chat.ts). */
+	transition: transform .3s cubic-bezier(.2, .7, .2, 1), width .3s cubic-bezier(.2, .7, .2, 1);
 }
 
-.composer-tab:hover { color: var(--vscode-foreground); }
+.composer-tab:hover, .composer-tab.pull-target { color: var(--vscode-foreground); }
 /* The first letter is the Alt shortcut's hint. */
 .composer-tab-key { color: color-mix(in srgb, var(--vscode-foreground) 45%, var(--fg-3)); }
 .composer-tab:hover .composer-tab-key, .composer-tab.active .composer-tab-key { color: inherit; }
@@ -6746,7 +6989,6 @@ body.vv-locked {
 .composer-tab-count.agents { background: var(--vscode-focusBorder); color: var(--vscode-button-foreground, #fff); }
 .composer-tab-count.access { background: color-mix(in srgb, var(--vscode-foreground) 14%, transparent); color: var(--vscode-foreground); }
 .composer-tab.active { color: var(--vscode-foreground); font-weight: 600; }
-.composer-tab.active::after { background: var(--vscode-focusBorder); transform: translateX(calc(var(--swipe-pull, 0) * 12px)); transition: background .12s, transform .16s ease-out; }
 .composer-tab:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; border-radius: 4px; }
 
 /* Chat: the message box, no skills. Skills: every skill, wrapped, in the box's place. */
@@ -6769,6 +7011,9 @@ body.vv-locked {
 .composer-list .cl-spacer { flex: 1; }
 .composer-list .cl-link { border: none; background: none; padding: 0 2px; color: var(--vscode-textLink-foreground); font: inherit; font-size: 11px; text-transform: none; letter-spacing: 0; font-weight: 500; cursor: pointer; }
 .composer-list .cl-link:hover { text-decoration: underline; }
+.composer-list .cl-head .gh-refresh { height: 20px; min-width: 20px; padding: 0; border-radius: 5px; }
+.composer-list .cl-head .gh-refresh .codicon { font-size: 14px; }
+.composer-list .cl-head .gh-refresh:disabled { cursor: default; color: var(--fg-2); }
 .composer-list .cl-row { display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--vscode-foreground); font: inherit; text-align: left; box-sizing: border-box; transition: background .12s, border-color .12s; }
 .composer-list button.cl-row { cursor: pointer; }
 .composer-list .cl-row-pair { display: flex; align-items: center; gap: 4px; min-width: 0; }
@@ -6929,15 +7174,56 @@ body.vv-locked {
 .composer-github .cl-row.current .cl-title { font-weight: 600; }
 
 /* The GitHub tab's "Create pull request" form: a title, Draft, Create. */
-.gh-pr-form { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px 8px; margin: 2px 0 4px; border: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent); border-radius: 6px; }
-.gh-pr-title { box-sizing: border-box; width: 100%; padding: 4px 6px; font: inherit; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); border-radius: 4px; }
-.gh-pr-title:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
-.gh-pr-actions { display: flex; align-items: center; gap: 8px; }
+/* The GitHub tab's new pull request form: a card with a head → base line, the title, and buttons. */
+.gh-pr-form { display: flex; flex-direction: column; gap: 8px; padding: 10px 10px 10px; margin: 2px 0 6px; border: 1px solid color-mix(in srgb, var(--vscode-charts-green) 30%, transparent); border-radius: 10px; background: linear-gradient(180deg, color-mix(in srgb, var(--vscode-charts-green) 7%, transparent), transparent 70%); box-shadow: 0 1px 0 color-mix(in srgb, var(--vscode-foreground) 4%, transparent) inset; animation: gh-in .22s ease-out; }
+.gh-pr-form.busy { opacity: .75; }
+.gh-pr-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.gh-pr-head-icon { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; flex: none; border-radius: 6px; color: var(--vscode-charts-green); background: color-mix(in srgb, var(--vscode-charts-green) 16%, transparent); }
+.gh-pr-head-icon .codicon { font-size: 13px; }
+.gh-pr-head-title { flex: none; font-weight: 600; }
+.gh-pr-flow { display: inline-flex; align-items: center; gap: 4px; min-width: 0; margin-left: auto; font-size: 11px; }
+.gh-branch { min-width: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px 6px; border-radius: 5px; font-family: var(--vscode-editor-font-family, monospace); font-size: 10.5px; color: var(--vscode-textLink-foreground); background: color-mix(in srgb, var(--vscode-textLink-foreground) 12%, transparent); }
+.gh-branch.base { color: var(--fg-2); background: color-mix(in srgb, var(--vscode-foreground) 9%, transparent); }
+.composer-list .gh-repo-link { display: inline-flex; align-items: center; gap: 5px; min-width: 0; padding: 0; border: none; background: none; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
+.composer-list .gh-repo-link .cl-head-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-list .gh-repo-link .codicon { font-size: 12px; opacity: .7; }
+.composer-list .gh-repo-link:hover { color: var(--vscode-textLink-foreground); }
+.composer-list .gh-repo-link:hover .codicon { opacity: 1; }
+.gh-workflow-file { min-width: 0; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--vscode-editor-font-family, monospace); font-size: 10.5px; color: var(--vscode-textLink-foreground); cursor: pointer; }
+.gh-workflow-file:hover { text-decoration: underline; }
+.gh-pr-flow-arrow { flex: none; font-size: 11px !important; opacity: .6; }
+.gh-pr-title { box-sizing: border-box; width: 100%; padding: 6px 8px; font: inherit; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, color-mix(in srgb, var(--vscode-foreground) 14%, transparent)); border-radius: 6px; }
+.gh-pr-title:focus { outline: none; border-color: var(--vscode-focusBorder); box-shadow: 0 0 0 2px color-mix(in srgb, var(--vscode-focusBorder) 25%, transparent); }
+.gh-pr-actions { display: flex; align-items: center; gap: 6px; }
 .gh-pr-actions .cl-spacer { flex: 1; }
-.gh-pr-draft { display: inline-flex; align-items: center; gap: 4px; opacity: .85; }
-.gh-pr-submit { font-weight: 600; }
+.gh-pr-draft { display: inline-flex; align-items: center; gap: 5px; color: var(--fg-2); font-size: 11.5px; cursor: pointer; }
+.gh-pr-draft input { margin: 0; accent-color: var(--vscode-button-background); }
+.composer-list .gh-pr-form .cl-action { height: 24px; padding: 0 12px; opacity: 1; }
+.composer-list .gh-pr-form .gh-pr-submit { font-weight: 600; min-width: 72px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.composer-list .gh-pr-form .gh-pr-submit[aria-busy="true"]:disabled { opacity: .9; }
+.composer-list .gh-pr-form .gh-pr-submit .codicon { font-size: 12px; }
+.composer-list .gh-pr-form .cl-action:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 1px; }
 .gh-pr-note { font-size: .92em; opacity: .7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gh-pr-note.error { opacity: 1; color: var(--vscode-errorForeground); white-space: normal; }
+/* "Pull request #N opened", until the list carries it: a slim status line, not a row. */
+.composer-list .gh-log { display: flex; align-items: center; gap: 8px; margin: 0 2px 6px; padding: 4px 6px 4px 8px; border-radius: 8px; background: color-mix(in srgb, var(--vscode-charts-green) 10%, transparent); color: var(--fg-2); font-size: 11.5px; animation: gh-in .25s ease-out; }
+.composer-list .gh-log-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; flex: none; border-radius: 50%; background: var(--vscode-charts-green); color: var(--vscode-editor-background, #1e1e1e); }
+.composer-list .gh-log-icon .codicon { font-size: 11px; font-weight: 700; }
+.composer-list .gh-log-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-list .gh-log-text strong { color: var(--vscode-foreground); font-weight: 600; }
+.composer-list .gh-log-link { display: inline-flex; align-items: center; gap: 4px; flex: none; height: 20px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--vscode-textLink-foreground); font: inherit; cursor: pointer; }
+.composer-list .gh-log-link:hover { background: color-mix(in srgb, var(--vscode-textLink-foreground) 12%, transparent); }
+.composer-list .gh-log-link .codicon { font-size: 11px; }
+/* The row of a pull request just opened: a green edge, and one soft glow the first time it shows. */
+.composer-list .cl-row.gh-pr-row.just-opened { border-color: color-mix(in srgb, var(--vscode-charts-green) 40%, transparent); background: color-mix(in srgb, var(--vscode-charts-green) 7%, transparent); }
+.composer-list .cl-row.gh-pr-row.glow { animation: gh-glow 1.6s ease-out; }
+.composer-list .cl-chip.new { gap: 3px; background: color-mix(in srgb, var(--vscode-charts-green) 18%, transparent); color: var(--vscode-charts-green); }
+.composer-list .cl-chip.bad { gap: 3px; background: color-mix(in srgb, var(--vscode-charts-red) 16%, transparent); color: var(--vscode-charts-red); }
+.composer-list .cl-chip .codicon { font-size: 10px; }
+.composer-list .cl-chip.mine, .composer-list .cl-chip.plain { gap: 3px; }
+@keyframes gh-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+@keyframes gh-glow { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--vscode-charts-green) 55%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
+@media (prefers-reduced-motion: reduce) { .gh-pr-form, .composer-list .gh-log, .composer-list .cl-row.gh-pr-row.glow { animation: none; } }
 .gh-pr-offer:disabled { opacity: .6; cursor: default; }
 
 /* "Add skill": the same capsule as the "messages below" button, so it reads apart from the skills. */
@@ -7146,6 +7432,13 @@ body.vv-locked {
 /* Outside the message box nothing has to line up with a textarea, so the hidden brackets
    around a badge take no room: the badge sits right against the text. */
 .att-token-wrap:not(.input-mirror *) > .att-token-hide { display: none; }
+/* Nor does the reserved `@N`: it is a fixed slot for the icon and a 4 px gap, so every badge of
+   one label is one width whatever its number. In the box `alignLineStartBadges` does the same. */
+.att-token-wrap:not(.input-mirror *) .att-token-prefix { display: inline-block; width: 21px; text-indent: -200px; white-space: nowrap; }
+.att-token-wrap:not(.input-mirror *) .att-token-prefix + .att-token-hide { display: none; }
+/* text-indent is inherited, and the icon is a block inside that slot: without this its glyph
+   was pushed 200 px left, out of the badge. */
+.att-token-wrap:not(.input-mirror *) .att-token-prefix .att-token-icon { text-indent: 0; }
 
 /* Generated and presented raster images use native cards on every chat surface. */
 .image-card > img { display: block; width: auto; max-width: 100%; max-height: 480px; margin: 0 auto; object-fit: contain; }
@@ -7302,9 +7595,9 @@ details[open] > summary.json-line > .codicon-chevron-right { transform: rotate(9
 .json-boolean { color: var(--vscode-debugTokenExpression-boolean, #569cd6); }
 .json-null { color: var(--fg-3); font-style: italic; }
 .json-object, .json-array { color: var(--fg-3); }
-body.vscode-light .json-string { color: var(--vscode-debugTokenExpression-string, #a31515); }
-body.vscode-light .json-number { color: var(--vscode-debugTokenExpression-number, #098658); }
-body.vscode-light .json-boolean { color: var(--vscode-debugTokenExpression-boolean, #0000ff); }
+:is(:root[data-theme="light"] body, :root:not([data-theme]) body.vscode-light) .json-string { color: var(--vscode-debugTokenExpression-string, #a31515); }
+:is(:root[data-theme="light"] body, :root:not([data-theme]) body.vscode-light) .json-number { color: var(--vscode-debugTokenExpression-number, #098658); }
+:is(:root[data-theme="light"] body, :root:not([data-theme]) body.vscode-light) .json-boolean { color: var(--vscode-debugTokenExpression-boolean, #0000ff); }
 /* Shown on hover or keyboard focus; always shown where there is no hover. */
 .json-copy {
 	flex: none; display: inline-flex; align-items: center; justify-content: center;
@@ -7533,7 +7826,7 @@ body.vscode-light .json-boolean { color: var(--vscode-debugTokenExpression-boole
    between open projects). Twelve hues picked to read apart; lighter on dark themes,
    darker on light ones. Only the folder icon takes it. */
 .project-icon.project-color { --pc-s: 72%; --pc-l: 66%; color: hsl(var(--pc-h) var(--pc-s) var(--pc-l)) !important; opacity: 1 !important; }
-body.vscode-light .project-icon.project-color { --pc-s: 68%; --pc-l: 40%; }
+:is(:root[data-theme="light"] body, :root:not([data-theme]) body.vscode-light) .project-icon.project-color { --pc-s: 68%; --pc-l: 40%; }
 .project-icon.pc-0 { --pc-h: 4; }
 .project-icon.pc-1 { --pc-h: 28; }
 .project-icon.pc-2 { --pc-h: 48; }
@@ -7546,8 +7839,8 @@ body.vscode-light .project-icon.project-color { --pc-s: 68%; --pc-l: 40%; }
 .project-icon.pc-9 { --pc-h: 262; }
 .project-icon.pc-10 { --pc-h: 290; }
 .project-icon.pc-11 { --pc-h: 324; }
-body.vscode-light .project-icon.pc-2 { --pc-l: 34%; }
-body.vscode-light .project-icon.pc-3 { --pc-l: 34%; }
+:is(:root[data-theme="light"] body, :root:not([data-theme]) body.vscode-light) .project-icon.pc-2 { --pc-l: 34%; }
+:is(:root[data-theme="light"] body, :root:not([data-theme]) body.vscode-light) .project-icon.pc-3 { --pc-l: 34%; }
 
 @media (min-width: 1000px) {
 	.tab.group-folded { display: none !important; }
@@ -8139,3 +8432,75 @@ body.vscode-light .project-icon.pc-3 { --pc-l: 34%; }
 .tab.pinned.active {
 	border-bottom-color: var(--vscode-charts-yellow, #cca700);
 }
+
+/* The message box under a pinned terminal: the conversation's own footer, moved into the terminal's column
+   (`renderTerminalDock`). It takes its natural height under the stage, on the terminal's own background. */
+.terminal-main > .footer {
+	flex: none;
+	/* No padding above the composer tabs (asked for: a third of the old gap): the 28px tab already
+	   centres its label with ~7px of air, so the label sits ~7px under the border instead of ~15px
+	   (a -2px pull, ~5px, was too tight). The tabs keep their full 28px hit area. */
+	padding-top: 0;
+	border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+	background: var(--bg);
+}
+.terminal-main > .footer::before { display: none; }
+/* A composer tab's panel (Skills, Activity, Prompts, …) is sized against the whole view (33vh, or the
+   user's height), but here it shares the column with the terminal and the docked messages: with both
+   shown, the footer grew past the column's foot and took the bottom of the message box out of sight.
+   So in this column the footer may shrink, and only the panel gives way, down to its own minimum;
+   the tabs, the message box and the Git line keep their height. */
+.terminal-main { overflow: hidden; }
+.terminal-main > .footer { flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.terminal-main > .footer > * { flex-shrink: 0; }
+.terminal-main > .footer > .composer { flex-shrink: 1; min-height: 0; }
+.terminal-main > .footer > .composer > * { flex-shrink: 0; }
+.terminal-main > .footer > .composer > .composer-list,
+.terminal-main > .footer > .composer > .skill-bar { flex-shrink: 1; min-height: 68px; overflow-y: auto; }
+/* With the tabs hidden the box would touch the border: give it the old gap back. */
+.terminal-main > .footer > .composer-tabs[hidden] + .composer { margin-top: 8px; }
+
+/* Stack of a docked terminal: the terminal with its own tools (stage, key bar, toolbar), then the optional messages and the message box. */
+.terminal-main > .terminal-stage { order: 0; }
+.terminal-main > .terminal-keybar { order: 1; }
+.terminal-main > .terminal-toolbar { order: 2; }
+.terminal-main > .thread { order: 4; max-height: 70%; min-height: 0; border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent); }
+.terminal-main > .footer { order: 5; }
+/* Height of the docked messages: --terminal-chat-h (px) set by the handle, 45% by default. */
+/* It shrinks (flex-shrink 1) when the column runs out of room — a composer tab's panel opening in the
+   footer — so the terminal stage keeps its minimum rather than going to 0. */
+.terminal-main > .thread { flex: 0 1 var(--terminal-chat-h, 45%); }
+/* The handle takes no room: a transparent grab area straddles the thread's top border, and the hover line is drawn
+   solid over that border. A translucent fill over the area let the thread's content show through it, the sticky
+   prompt's background in the middle and its side padding at the ends, which read as two stubs (asked for). */
+.terminal-chat-resize { order: 3; flex: none; height: 0; position: relative; z-index: 5; }
+.terminal-chat-resize::before { content: ''; position: absolute; left: 0; right: 0; top: -4px; height: 9px; cursor: ns-resize; }
+.terminal-chat-resize::after { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--vscode-focusBorder); opacity: 0; transition: opacity .12s ease; pointer-events: none; }
+.terminal-chat-resize:hover::after, .terminal-chat-resize.dragging::after { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .terminal-chat-resize::after { transition: none; } }
+#app:not(.terminal-chat-messages) .terminal-chat-resize { display: none; }
+/* "Create pull request" before the form opens: an invitation, drawn dashed. */
+.composer-list .cl-row.gh-pr-offer { border: 1px dashed color-mix(in srgb, var(--vscode-charts-green) 40%, transparent); margin-bottom: 4px; }
+.composer-list .cl-row.gh-pr-offer:hover:not(:disabled) { background: color-mix(in srgb, var(--vscode-charts-green) 8%, transparent); border-style: solid; }
+.composer-list .cl-row.gh-pr-offer:disabled { opacity: .6; cursor: default; }
+
+/* A watched-run row: the bell lies inside the row's own hover, over a slot left of the
+   open-in-browser icon (a button cannot hold a button, so it is a sibling laid on top). The row's
+   padding is 8px plus a 1px border, the icon 16px, the slot's gap 4px: hence right: 29px. */
+.composer-github .gh-run-item { position: relative; min-width: 0; }
+.composer-github .gh-run-trail { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+.composer-github .gh-watch-slot { flex: none; width: 24px; height: 24px; }
+.composer-github .gh-run-item:hover > .cl-row { background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent); }
+.composer-github .gh-run-item:hover .cl-chevron, .composer-github .gh-run-item:focus-within .cl-chevron { opacity: 1; }
+.composer-github .gh-run-item .gh-watch { position: absolute; top: 50%; right: 29px; transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: none; border-radius: 6px; background: none; color: var(--fg-3); cursor: pointer; opacity: 0; transition: opacity .12s, background .12s, color .12s; }
+.composer-github .gh-run-item .gh-watch .codicon { font-size: 14px; }
+.composer-github .gh-run-item:hover .gh-watch, .composer-github .gh-run-item:focus-within .gh-watch, .composer-github .gh-run-item .gh-watch.on { opacity: 1; }
+.composer-github .gh-run-item .gh-watch:hover { color: var(--vscode-foreground); background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent); }
+.composer-github .gh-run-item .gh-watch:active { background: color-mix(in srgb, var(--vscode-foreground) 16%, transparent); }
+.composer-github .gh-run-item .gh-watch.on { color: var(--vscode-charts-yellow); background: color-mix(in srgb, var(--vscode-charts-yellow) 14%, transparent); }
+.composer-github .gh-run-item .gh-watch.on:hover { background: color-mix(in srgb, var(--vscode-charts-yellow) 22%, transparent); }
+.composer-github .gh-run-item .gh-watch:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.composer-github .gh-run-item .gh-watch.rang .codicon { animation: gh-bell-ring .6s ease-out; transform-origin: 50% 10%; }
+@keyframes gh-bell-ring { 0% { transform: rotate(0); } 20% { transform: rotate(16deg); } 40% { transform: rotate(-12deg); } 60% { transform: rotate(7deg); } 80% { transform: rotate(-3deg); } 100% { transform: rotate(0); } }
+@media (prefers-reduced-motion: reduce) { .composer-github .gh-run-item .gh-watch.rang .codicon { animation: none; } }
+@media (hover: none) { .composer-github .gh-run-item .gh-watch { opacity: 1; } }

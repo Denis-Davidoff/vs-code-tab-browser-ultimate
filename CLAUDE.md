@@ -138,6 +138,7 @@ cloned repository could switch autofill on for its own dev server (breaks-silent
 | `aiBrowser.chat.piPath` | `""` | the `pi` executable, the same way; `application`-scoped — see [Pi over its RPC mode](#pi-over-its-rpc-mode) |
 | `aiBrowser.chat.openrouterEndpoint` | `""` | the OpenRouter API address (empty: `https://openrouter.ai/api/v1`); `application`-scoped, https or loopback http only, since the API key is sent to it — see [OpenRouter](#openrouter-an-http-api-and-our-own-agent-loop) |
 | `aiBrowser.chat.sound.enabled` / `.name` / `.volume` / `.repeat` | `true` / `chime` / `60` / `1` | the sound when an agent finishes — see [Finish sounds](#finish-sounds) |
+| `aiBrowser.chat.sound.githubRun` / `aiBrowser.chat.notifications.githubRun` | `success` / `true` | the sound and the system notification when a GitHub Actions run whose bell was rung ends — see [The GitHub tab](#the-github-tab-pull-requests-and-actions-runs) |
 | `aiBrowser.chat.viewMode` | `compact` | how much of the agents' work the chat shows: `minimal`, `compact` (tool calls folded) or `standard` (unfolded) — see [View modes](#view-modes-minimal-compact-standard); also the View Mode row of the chat's approval menu |
 | `aiBrowser.chat.collapseToolCalls` | `true` | deprecated by `viewMode`, and read only while that is unset: `false` is Standard, anything else Compact |
 
@@ -255,6 +256,7 @@ difference, in `browserController.js`, was a doc comment whose link had been upd
 - [src/translate/translate.ts](src/translate/translate.ts) — Translate Page: the tab, the language picker, the prompt on the clipboard
 - [src/translate/translateText.ts](src/translate/translateText.ts) — languages, the prompt, checks on what the assistant writes back (leaf, under test)
 - [src/translate/translateScript.ts](src/translate/translateScript.ts) — the page-side translator behind `browser_text_segments` / `browser_replace_text`
+- [preview-src/selectionRich.ts](preview-src/selectionRich.ts) — a chat selection as Markdown and HTML for the clipboard (converter under test)
 - [preview-src/tabProjects.ts](preview-src/tabProjects.ts) — chat tabs grouped by project for the bar, the drawer and the tab list (leaf, under test)
 - [preview-src/markdownEdit.ts](preview-src/markdownEdit.ts) — the skill editor's Markdown edits (bold, lists, code block, link) and its `{{name}}` reading (leaf, under test)
 - [src/chat/chatView.ts](src/chat/chatView.ts) — the AI Browser chat: the webview view, its tabs, history, attachments, usage, switching agents
@@ -4812,9 +4814,10 @@ running; it ships in the VSIX like README.md, and a change reaches users with th
 file parses), forgivingly: comments are skipped, entries without items are dropped, and a file
 that cannot be read leaves the welcome its own one-line text. **Add an entry with every release
 that ships something a user would notice**; the authoring notes are in the file's own comment.
-**And the README's *Changelog* with it**, one short paragraph per version: it fell four releases
-behind (0.7.0–0.7.3) while NEWS.md kept up, and the README is the extension's page in VS Code
-and on Open VSX.
+**And [CHANGELOG.md](CHANGELOG.md) with it**, one short paragraph per version, newest first: the
+README's own *Changelog* section fell four releases behind (0.7.0–0.7.3) while NEWS.md kept up, and
+moved to that file when the README was cut back; the README links to it under *More*. Keep the
+two saying the same things for each release.
 
 **"Hide changelog" folds "What's new" away, and "Show changelog" brings it back** — links in the
 small print, asked for. The choice is kept in `globalState` (`aiBrowser.chat.newsHiddenAt`), so it
@@ -4852,7 +4855,7 @@ from their shipped webviews — Claude Code 2.1.301 (`webview/index.css`, CSS mo
 | copying a message | asked for | a copy button at the bottom right of every prompt and reply, on hover (`.message-copy`); a reply copies as its Markdown; the prompt's copy does not fold the prompt |
 | spacing | asked for | rows `--row-pad` (10px) apart above and below — 6px at first, widened on request twice; the timeline's dot and line are placed from the same variable, so change only it — and 20px between turns — none after a turn that holds only its prompt, so messages added during a turn sit 22px apart rather than 42 (asked for); in a reply, paragraphs, lists, quotes, code blocks and tables 0.9em apart |
 | lists | asked for | a bullet is an em dash (`list-style-type: "— "`) in the theme's chart yellow, items 0.4em apart; numbered items 0.7em apart, their number bold in the same yellow; headings (`#`…`######`, h5 and h6 sized as h4) bold (700), a little larger by level — 1.3, 1.2, 1.12 and 1.05em — and coloured from that yellow at h6 to white at h1, a fifth more white each level up (`level-N`, `--heading-yellow`); on a light theme the top is the foreground, since white would not read |
-| sending | asked for | the message's text lifts out of the box and flies to its prompt in the thread (`launchFlight` / `landFlight`): the prompt's text is hidden until the flight lands, so the words are on screen once; the target is the first new prompt **with this text** (two sends inside one post round trip put both prompts in at once, and "the last prompt" was the wrong one), hidden again if it is rebuilt in flight; a chat switch stops the flight; a send with no prompt appearing within 1.5 s (still waiting for detection, refused) fades in place; nothing flies under reduced motion |
+| sending | asked for | the message's text lifts out of the box and flies to its prompt in the thread (`launchFlight` / `landFlight`): the prompt's text is hidden until the flight lands, so the words are on screen once; the target is the first new prompt **with this text** (two sends inside one post round trip put both prompts in at once, and "the last prompt" was the wrong one), hidden again if it is rebuilt in flight; a chat switch stops the flight; a send with no prompt appearing within 1.5 s (still waiting for detection, refused) fades in place; nothing flies under reduced motion. **After a send the thread follows its end for 4 s** (`followAfterSend`, `sentFollowMs`), whatever it showed: the prompt arrives a post later and a long one used to leave the reader at its top while the thinking started below; every render of that chat re-pins to the end, and a wheel, press or touch on the thread ends it. **Past those 4 s a thread at its end stays there while it grows** (`followThreadEnd`): a `MutationObserver` on the thread, a `ResizeObserver` and image `load` re-pin once a frame while `threadFollowsEnd` holds — one post could add more than `renderThread`'s 60 px (a thinking block, a tool's output), which left the reader behind the reply for good. A wheel up clears the flag at once, the scroll event otherwise; nothing moves while a pointer is held on the thread (#365); `renderThread` sets the flag itself after placing the scroll, or the queued frame would pull a restored position to the end |
 
 **The Markdown reader** handles what replies use: fenced code, headings, quotes, rules, tables
 (outer pipes optional, one column allowed, a `|` inside inline code or escaped `\|` kept as text),
@@ -5056,6 +5059,21 @@ whole in a tab, as before.
 
 **Copy goes through the host** (`{ type: 'copy' }` → `env.clipboard`): `navigator.clipboard` in
 a webview depends on the host granting it.
+
+**A selection copied from the chat carries its formatting** (asked for): Markdown on
+`text/plain`, HTML on `text/html`, sent attachment badges as their `[att:…|label]` tag in the
+Markdown (so a paste into the composer brings the attachment back) and `<code>label</code>` in the
+HTML. [preview-src/selectionRich.ts](preview-src/selectionRich.ts) reads the live range into a
+small tree — clipped to the range, hidden rows (Minimal mode), buttons, icon glyphs and a badge's
+hidden `@N` left out — and `treeMarkdown` / `treeHtml` (no DOM, under test) write it. A selection
+inside code is the code alone; part of one paragraph, item or cell is inline formatting only;
+plain text with no markup is copied as `selection.toString()`, as before. Links carry
+`data-href` for this (`linkNode`); the HTML keeps only http/https/file links. The clipboard write
+is `document.execCommand('copy')` from the Cmd/Ctrl+C handler, so our own `copy` handler can set
+both formats — the host's `env.clipboard` is text-only and is used only when no copy event with a
+clipboard arrives (`chatSelection.ts`). **Do not post to the host after filling the event**: its
+`writeText` lands later and replaces the HTML with plain text. Checked in headless Chrome against
+a rendered DOM; **not run inside VS Code yet** (whether the webview passes `text/html` through).
 
 **Testing the look in headless Chrome has two traps**, both of which look exactly like real bugs:
 it will not make a window narrower than 500 px (`--window-size` silently crops the screenshot, so
@@ -6219,7 +6237,7 @@ the folder and GitHub rows only, and nothing is chosen by default, query or not 
   Clicking a file opens `vscode.diff` through the built-in Git extension's public `toGitUri`
   API: Staged compares HEAD with index, Unstaged compares index with the working file. Added
   and deleted files use an empty side; renames use their original path on the left (`gitDiff.ts`).
-  Mixed changes offer **Commit staged** or **Commit all changes**. Under **Commit all changes** is a **Commit all changes & Push** twin (Commit staged has none — removed on request)
+  Mixed changes offer **Commit staged** or **Commit all changes**. Under **Commit all changes** is a **Commit all changes & Push** twin, and whenever something is staged **Commit staged (N) & Push** stands last in the window, below every note and button (asked for, after an earlier version without it)
   (`gitCommit` with `push: true`): after a successful commit, and once the Git lock is released, `_pushAfterCommit`
   runs the Branches window's own `push` — or `publish` when the branch has no upstream — through `_gitRemoteAction`,
   with every question and check of that path; a question or an error opens the Branches window (`pushAfterCommit`). An empty index first offers
@@ -6237,7 +6255,7 @@ the folder and GitHub rows only, and nothing is chosen by default, query or not 
   same lock immediately before starting; queued work waits for its release. The copy's selected
   branch is separate from its original owned branch; cleanup only deletes a generated branch
   whose name matches the copy directory, preserving preexisting branches after checkout.
-  Successful commits use a native VS Code notification that closes after ten seconds; no success
+  Successful commits use a native VS Code notification that closes after ten seconds, or at once with its Cancel button (`cancellable: true` exists only to give the toast a way to close: an extension cannot move a toast, and in the bottom right corner it covers the chat's Branches button); no success
   banner or extra success entry is added to the chat. Failures remain visible with an explicit
   action to send their diagnostics to the current chat for repair; no repair turn starts automatically. See `gitAccess.ts`, `gitIndex.ts`,
   `gitCommit.ts`, `commitMessage.ts`, and `_commitWorkdir` in `chatView.ts`.
@@ -6284,7 +6302,13 @@ the folder and GitHub rows only, and nothing is chosen by default, query or not 
     lock with no busy list; a pull waits like a switch. **Refused in a folder whose settings are
     held back** (`_untrusted`): the extension runs the repository's `pre-push` hook (#443), and in
     Restricted Mode with every other footer Git path (#208).
-  - **The pull request button** is GitHub's compare page (`pullRequestUrl`, `pull/new` without
+  - **The pull request button, "Create PR"**, with the `gh` CLI installed (`GitBranchState.gh`,
+    set by the host from `_ghBinary`) and the GitHub composer tab shown, opens that tab and
+    refreshes it (asked for): this branch's pull request is scrolled to and focused, or, with
+    none, the Create form opens with the title filled in and focus on **Create**, one click
+    left (`githubPrWanted`, honoured only by the fresh answer for that folder). Otherwise it
+    opens in the system browser, never the built-in one (the compare page needs the user's own
+    GitHub sign-in), with a trailing external-link icon. That page is GitHub's compare page (`pullRequestUrl`, `pull/new` without
     a known default branch), only for a published, non-default branch whose remote `parseRepo`
     accepts — another host gets none — and each path segment of a branch name is encoded on its
     own (`branchPath`): `encodeURI` left `#`, so `fix#12` opened `pull/new/fix`. **Credentials are
@@ -6524,12 +6548,33 @@ leaf is [src/chat/githubStatus.ts](src/chat/githubStatus.ts) (under test), the h
 - **`gh` runs in the home directory with `--repo owner/name`**, so it reads none of the
   repository's own Git configuration (#208); found by absolute path (#448), prompts and the
   update notifier off.
+- **The repository's name in the tab's heading opens its root on GitHub**, in the system browser,
+  with an external-link icon after it (`gh-repo-link`, asked for); Refresh stays at the right.
 - Per-pull-request checks and review state come only from `gh`; the API list has neither.
+- **Its spinners are VS Code's own** (asked for): the refresh button, the first load, a running
+  run and a pull request's running checks use `codiconSpinner()` — the `loading` codicon with
+  `codicon-modifier-spin`. Not `icon('loading')`, which the chat swaps for its liquid loader
+  everywhere else.
+- **Each Actions run names the workflow file it came from** (asked for: one event often starts
+  several workflows, and the file is what tells them apart). The API run carries `path`;
+  `gh run list` has no such field, only `workflowDatabaseId`, so `gh workflow list --all --json
+  id,path` is read beside it and joined (`parseGhWorkflows`). Only a file directly in
+  `.github/workflows` is kept (`workflowPath`): a dynamic workflow (code scanning, Pages) has no
+  file, and the path is the network's. A click on it opens the file from the folder's repository
+  root (`openWorkflowFile`, editor-only, resolved with `rev-parse --show-toplevel`; a file this
+  checkout lacks says so), and on Chrome and the website the file on GitHub at the run's commit
+  (`workflowFileUrl`, `headSha`).
 - Answers are cached 30 s per repository in the host and in the view; a row opens the page
   in the system browser, always (asked for). Items on the folder's branch are marked.
+- **A pull request just created is not a row of its own** (asked for: a card above the list
+  read as one more pull request). Once the list carries it, its row gets a "just opened" chip;
+  until then a slim green status line under the heading (`.gh-log`) says "Pull request #N opened" with View — only for the folder and branch it was opened from, and dropped once two minutes pass without the list carrying it (`githubPrCreatedMs`); while it shows, the Create offer is hidden. It was one window-wide value never cleared, so a pull request merged since stayed "opened" for good, in every folder, beside the Create offer. The row glows once (`githubPrGlowed`, so a rebuild does not replay it). The form is a card: "New pull request", head → base as branch chips (`setGithubPrFlow`), the title, Draft, Cancel and a primary Create; the offer before it is drawn dashed; check chips carry an icon.
 - **Create pull request** (asked for): a row above the list when the folder's branch is not the
-  default branch and no open pull request has it as head (`canOfferPullRequest`). Disabled with
-  "not published" until the branch has an upstream — publishing stays the Branches window's job.
+  default branch and no open pull request has it as head (`canOfferPullRequest`). Until the
+  branch has an upstream it carries "not published" and a click opens the Branches window, where
+  Publish is — publishing stays that window's job; it was a disabled row once, a dead end reported as a
+  bug. **A branch whose upstream is `[gone]` gets no offer at all** (`upstreamGone`): its remote branch was
+  deleted, typically after its pull request was merged, and the disabled row stayed there for good.
   A click opens an inline form (title prefilled from the last commit subject, Draft, Create),
   built once and kept across rebuilds (#365); never a modal. The host (`_githubCreatePr`) reads
   branch, base (the default branch from `gh repo view` / `GET /repos`), remote and fork itself —
@@ -6537,7 +6582,38 @@ leaf is [src/chat/githubStatus.ts](src/chat/githubStatus.ts) (under test), the h
   when the branch is pushed to a fork (`pullRequestHead`); existing PRs match the head repository and branch, so another fork using the same branch name cannot hide creation; the body lists the branch's commit
   subjects (`pullRequestBody`). `gh pr create --repo` first, else the API with VS Code's GitHub
   sign-in (asked for, the click being the consent). One create per folder at a time;
-  editor-only (`githubCreatePr` in `commands.ts`).
+  editor-only (`githubCreatePr` in `commands.ts`). **A branch whose upstream is `[gone]` is not
+  published** (`_githubLocal` reads `%(upstream:track)`): its remote branch was deleted (typically
+  after an earlier PR was merged), and GitHub answered the create with a bare "Validation Failed"
+  — its `errors[0]` is `{ field: 'head', code: 'invalid' }` with no `message`. Such errors are now
+  worded by `githubFieldError`, and a failed API create keeps the `gh` failure beside its own.
+- **A publish, push, pull or commit refreshes the tab while it is open** (asked for: the
+  Create pull request row can appear). `refreshGithubIfOpen` in `chat.ts` runs after a
+  `gitRemoteResult` with no error or question, and whenever a `workdirGit` changes the branch's
+  name, upstream or ahead count (`githubBranchShape`, reset with the folder). The view's 30 s
+  cache is bypassed; the host's may still answer the remote list, which is fine — `published`
+  and the branch are read locally on every request. A refresh asked during a request in flight
+  runs after its answer (`githubAgain`).
+- **A bell on an Actions run** (asked for): hovering a run that is `running` or `queued` shows
+  a bell (`gh-watch`) inside the row's hover, left of the open-in-browser icon: the row keeps a
+  24 px slot (`gh-watch-slot`) and the bell, a sibling since a button cannot hold a button, is
+  laid over it (`right: 29px` = padding + border + icon + gap — change them together), and the
+  hover is drawn on the `gh-run-item` wrapper so moving onto the bell keeps the row lit. A press
+  in the GitHub list holds its rebuild until release (`githubPressed`, #365): a refresh landing
+  between press and release lost the click. Rung, it stays shown in yellow, rings once
+  (reduced motion: still), and posts `githubWatchRun` (editor-only). The host
+  (`_runWatches`, keyed `runWatchKey` = `owner/name#id`, repo lower-cased) polls each run every
+  15 s — `gh run view --json` first, else the REST API through VS Code's sign-in or the public
+  one (`parseWatchedRun` reads both shapes) — whether or not the tab or the view is open. When the
+  run ends it posts `githubRunEnded` straight to a ready view (never queued: a late sound is
+  worse than none), which plays `aiBrowser.chat.sound.githubRun` (default `success`, `none` for
+  silence, at the chat sound's volume, **regardless of the speaker button**: the bell is the
+  consent) and refreshes the tab; and calls `osNotify(…, asked = true)`, which skips the agents'
+  `notifications.enabled` / `onlyWhenAway` and is governed only by
+  `aiBrowser.chat.notifications.githubRun`. Plus a status bar line, never a toast (#10). The
+  current set goes to the view as `githubRunWatches` on change and on `ready`. In memory, per
+  chat surface: a reload forgets them. Let go after 6 hours or 20 failed polls in a row (said in
+  the status bar); at most 20 at once. Both settings sit in Chat Settings → Sound, editor only.
 - **Not built:** other hosts (GitLab, Bitbucket), merging or re-running from the tab, live
   updates while it is open. Not run inside VS Code yet.
 
@@ -6570,11 +6646,12 @@ toolbar; at most 30, prompts up to 20 000 characters.
   a child of `.composer`, shown by `.skills-mode`; the choice is `composerTab` in the webview's
   `setState`, so every `vscode.setState` call must carry it (a test sandbox defines it too).
 - **A thread at its end stays at its end when the composer tab changes** (asked for): the other tabs make the composer taller and the thread shorter, so `setComposerTab` measures "at the end" (under 60 px, the thread's own rule) before the switch and, if so, keeps `scrollTop` at the bottom for the length of the height animation (`pinThreadToEnd`, 320 ms; a wheel, press or touch on the thread ends it). A thread scrolled up is left where it was.
-- **The message box stays under every composer tab, whole** (asked for): Skills, Activity, Conversation, Bash, GitHub and Files are panels above the full composer — chips, suggestions and every button, as on the Chat tab. It used to be cut to one line there, chips hidden.
-- **Scrolling down over the composer tab row does nothing** — it used to switch to Chat, and was removed on request after it kept firing inside sideways swipes; the row is `overflow-y: hidden`, or the active underline's 1 px overflow made it jump on a wheel. **A sideways swipe over it, or over the composer below it, walks the tabs** (asked for): fingers moving right go to the tab on the right (with natural scrolling that is a negative `deltaX`), left to the left, in the row's own order, stopping at the first or last; over the composer an element inside that can still scroll sideways in that direction (`scrollsSideways`: a long code line, a diff) keeps the gesture. The decisions are a leaf under test, [preview-src/composerSwipe.ts](preview-src/composerSwipe.ts); a gesture ends after 200 ms without events (`swipeGapMs`). **A fast flick moves exactly one tab** (asked for): a delta of 24 px or more, or 0.6 px/ms over the last 80 ms, steps at 28 px and then swallows the rest of the gesture and its momentum tail (a lockout of 350 ms, extended while events keep coming, covers a tail that resumes after a short gap) — the first version (one event's size, counted per gesture) either stepped twice or never. **But the lock must not outlive the tail**, which the second version did: extended by every event, it held as long as wheel events kept coming, so a second flick made before the tail went quiet was swallowed whole, and slow mode never came back. A tail only fades, so inside the lock a delta of 24 px or more that is over twice the previous one, or that turns the other way, is a new flick (120 ms after the step at the earliest) and steps again; and once the tail falls to 2 px the lock ends, so a slow drag can follow at once. **For 1.5 s after a consumed swipe event the next gesture is claimed wherever the pointer is** (`composerSwipedAt`): a step changes the composer's height and leaves the pointer over the thread, and the next flick then went nowhere until the pointer was moved back. Only a sideways gesture is consumed, so a vertical scroll of the thread still scrolls. **A slow drag works like a magnet** (asked for): the active tab's underline is pulled up to 12 px towards the next tab (`--swipe-pull`, none under reduced motion), the tab snaps at 56 px, and holds 220 ms before the next step can arm, so a slow drag walks on tab by tab without skipping. **The axis is decided on the first 6 px of movement**, sideways only if |dx| ≥ |dy| summed over them, never from one event: a vertical scroll drifting sideways does not walk the tabs, and a diagonal start of a sideways swipe no longer reads as "scroll down". **The gesture is claimed where it starts and followed on `document`** (capture listener): a step animates the composer's height, so the rest of the gesture landed on the thread and was lost. It takes the default (`preventDefault`), and the new tab is scrolled into view. Wheel only — a touch drag still scrolls the row.
-- **Which composer tabs are shown is a per-device choice** (Chat Settings → Appearance → Composer tabs, `localStorage` `aiBrowser.chat.composerTabsHidden`, all shown by default): Skills, Activity, Conversation, Bash, Files and GitHub can be switched off; Chat cannot be hidden. With every other tab off the whole tab row goes, Chat's title with it. Hiding the open tab returns to Chat, and its Alt+letter key does nothing. **A right-click anywhere on the tab row**, the empty space to its right included, opens the same choice as a menu (`openComposerTabsMenu`): every tab in the row's order with a check, Chat disabled ("Always shown"); a row toggles through `setComposerTabShown` and **stays open, its check redrawn in place** (`MenuItem.toggle`), so several can be changed in a row — closing and reopening it made it blink. It opens **at the pointer**, hung from a fixed zero-size `pointerAnchor` placed at the click, so it neither sits at the row's left edge nor moves when the row changes width. With every other tab hidden the row is gone, and only Chat Settings brings them back.
-- **Activity and Conversation are composer tabs too** (asked for): Activity is one scrolling list in the
-  box's place (`.composer-list`) with two sections, Agents then Access (`.cl-section`); Conversation lists
+- **The message box stays under every composer tab, whole** (asked for): Skills, Activity, Prompts, Bash, GitHub and Files are panels above the full composer — chips, suggestions and every button, as on the Chat tab. It used to be cut to one line there, chips hidden.
+- **The message part is darker than the composer tabs' panels** (asked for): `.input-area` is the surface with 18 % black mixed in, `.composer` (so Skills, Activity and the other panels, and `.cl-head`) 8 %, the button row (`.toolbar`) none. On the Chat tab the input area is the composer's top and takes its rounded corners; under a panel it is square.
+- **Scrolling down over the composer tab row does nothing** — it used to switch to Chat, and was removed on request after it kept firing inside sideways swipes; the row is `overflow-y: hidden`, or the active underline's 1 px overflow made it jump on a wheel. **The row has no bottom border** (removed on request): only the active tab's underline, drawn at `bottom: 2px` (raised 2 px off the row's foot, on request) so the row's `overflow-y: hidden` does not clip it. **A sideways swipe over it, or over the composer below it, walks the tabs** (asked for): fingers moving right go to the tab on the right (with natural scrolling that is a negative `deltaX`), left to the left, in the row's own order, stopping at the first or last; over the composer an element inside that can still scroll sideways in that direction (`scrollsSideways`: a long code line, a diff) keeps the gesture. The decisions are a leaf under test, [preview-src/composerSwipe.ts](preview-src/composerSwipe.ts); a gesture ends after 200 ms without events (`swipeGapMs`). **A fast flick moves exactly one tab** (asked for): a delta of 24 px or more, or 0.6 px/ms over the last 80 ms, steps at 28 px and then swallows the rest of the gesture and its momentum tail (a lockout of 350 ms, extended while events keep coming, covers a tail that resumes after a short gap) — the first version (one event's size, counted per gesture) either stepped twice or never. **But the lock must not outlive the tail**, which the second version did: extended by every event, it held as long as wheel events kept coming, so a second flick made before the tail went quiet was swallowed whole, and slow mode never came back. A tail only fades, so inside the lock a delta of 24 px or more that is over twice the previous one, or that turns the other way, is a new flick (120 ms after the step at the earliest) and steps again; and once the tail falls to 2 px the lock ends, so a slow drag can follow at once. **For 1.5 s after a consumed swipe event the next gesture is claimed wherever the pointer is** (`composerSwipedAt`): a step changes the composer's height and leaves the pointer over the thread, and the next flick then went nowhere until the pointer was moved back. Only a sideways gesture is consumed, so a vertical scroll of the thread still scrolls. **A slow drag works like a magnet** (asked for): the one underline (`composerIndicator`, below) is pulled part of the way towards the next tab — a smoothstep fraction of the whole distance, growing with the drag (`paintIndicator`'s `pull`; none under reduced motion) — the tab snaps at 44 px, and holds 220 ms before the next step can arm, so a slow drag walks on tab by tab without skipping. **The axis is decided on the first 6 px of movement**, sideways only if |dx| ≥ |dy| summed over them, never from one event: a vertical scroll drifting sideways does not walk the tabs, and a diagonal start of a sideways swipe no longer reads as "scroll down". **The gesture is claimed where it starts and followed on `document`** (capture listener): a step animates the composer's height, so the rest of the gesture landed on the thread and was lost. It takes the default (`preventDefault`), and the new tab is scrolled into view. Wheel only — a touch drag still scrolls the row.
+- **Which composer tabs are shown is a per-device choice** (Chat Settings → Appearance → Composer tabs, `localStorage` `aiBrowser.chat.composerTabsHidden`, all shown by default): Skills, Activity, Prompts, Bash, Files and GitHub can be switched off; Chat cannot be hidden. With every other tab off the whole tab row goes, Chat's title with it. Hiding the open tab returns to Chat, and its Alt+letter key does nothing. **A right-click anywhere on the tab row**, the empty space to its right included, opens the same choice as a menu (`openComposerTabsMenu`): every tab in the row's order with a check, Chat disabled ("Always shown"); a row toggles through `setComposerTabShown` and **stays open, its check redrawn in place** (`MenuItem.toggle`), so several can be changed in a row — closing and reopening it made it blink. It opens **at the pointer**, hung from a fixed zero-size `pointerAnchor` placed at the click, so it neither sits at the row's left edge nor moves when the row changes width. With every other tab hidden the row is gone, and only Chat Settings brings them back.
+- **Activity and Prompts are composer tabs too** (asked for): Activity is one scrolling list in the
+  box's place (`.composer-list`) with two sections, Agents then Access (`.cl-section`); Prompts lists
   this chat's own messages, newest first (`renderComposerHistory`, from `state.entries`); a click
   scrolls the thread to that turn and flashes its prompt (`scrollToPrompt`). **The composer tabs can be reordered by dragging one onto another**; the order is per device (`localStorage` `aiBrowser.chat.composerTabOrder`), a tab a later build adds going at the end. Each message with a reply has an **Answer** button at its right (`answerStart` → `scrollToEntry`): it scrolls to the start of the turn's last run of reply text, the tools and thinking between two reply blocks not splitting the run. An agent row opens the Agents panel on that agent's card; Access lists every tab with Take / Make free. History asks the host with
   `listHistory` (editor-only in `commands.ts`) each time its tab opens. One resize handle serves
@@ -7719,12 +7796,29 @@ as the first version did, put the prompt in the middle of a reply still streamin
 on below it. Measured with the real CLI in both shapes: after the first tool's result in one,
 and the story whole, then the prompt, then its answer in the other.
 
+**A waiting Claude message has an × too, and it withdraws rather than hides.** It is sent with
+its own `uuid` (the `_waiting` id), and the × asks Claude Code to drop it from its command queue
+(`cancel_async_message` with `message_uuid`, `ClaudeSession.withdraw`; the `unqueue` message,
+so Chrome and the website get it unchanged). Measured on 2.1.312: withdrawn while a tool ran it
+answered `cancelled: true` and never reached the model, and no turn of its own followed. Only on
+`true` does it leave the chat; `false` means the running turn already has it — a notice says so
+and it is placed as usual. **The × appears only once the running process has said it can**
+(`ClaudeSession.canWithdraw`): each process is sent `cancel_async_message` for a fresh uuid as it
+starts, and a supported subtype answers `success` with `cancelled: false` while an older CLI answers
+`error: "Unsupported control request subtype: …"` (both measured on 2.1.312) — a capability asked of
+the process, never guessed from its version. **Gemini, OpenCode and OpenRouter** hold a mid-turn message in their
+own session queue (`_queue`), so their `withdraw` takes it out of it and resolves its send `false`
+— certain, nothing is asked of the CLI. **Codex and Pi have none**: both put the message into the
+running turn at once (`turn/steer`, Pi's `steer`); Codex 0.164's app-server has no request that
+takes a steer back, and Pi's `clear_queue` clears every queued message, not one. Known, Claude only:
+its send has already resolved delivered, so annotations attached to the withdrawn message are gone.
+
 **The queue button is Send's own round button, in the theme's accent colour** (asked for:
 `--vscode-button-background`), so the two read as one pair — Send adds the message to the turn,
 the accent one holds it until the turn ends. It used to be a ghost button with a list icon.
 
 **Queued.** Held in the tab (`ChatTab._queued`) with the attachments in the box at the time, shown
-below the conversation ("Sent when this turn ends", with an x to take it back), and sent by the
+below the conversation ("Sent when this turn ends", with an × inside the message's own box, at its right and centred — `.pending-body` / `.pending-remove`, asked for: it used to sit small at the end of the note under the box), and sent by the
 provider (`_drainQueues`) one at a time **half a second after** the tab is idle — no turn running,
 none pending, no prompt waiting, no approval waiting. Not at the instant the turn ends: Claude Code
 may start a turn of its own milliseconds later, and a send then would be taken into it. A queued
@@ -7755,14 +7849,20 @@ into the wrong one, or with nobody watching:
 
 **A notice card (`.row.rich-notice`) is padded `7px 12px`**, less above and below than at the sides (asked for): the text's line height adds the rest, so the space reads even. Its time is drawn **outside** the card, under its bottom-right corner (`.rich-notice-time`, absolutely placed against the row, which keeps 22px of margin below for it; asked for). `preview-src/richSmoke.ts` checks both. A copy button at the card's bottom right, on hover (`corner-copy` in `richViews.ts`, asked for), copies the notice's text and reason only — not its time or its action buttons.
 
+**Send becomes Paste while the box is empty and the clipboard holds text** (asked for; `renderPaste` in `chat.ts`, `_composerClipboard` in `chatView.ts`). Same button, same place, a clipboard-and-page SVG of our own (`pasteGlyph`; codicons has no paste mark — `clippy` and `insert` were turned down) on the outlined disc Stop uses (`.send.paste`, asked for: paler than Send); nothing running, no draft chips (pinned terminals do not count), no file paste under way. The view asks the host `composerClipboard` `peek` (only whether there is text) when the box empties, on window and box focus, after a copy or cut, and every 2.5 s while the view has focus — never on every state post; a press asks `paste` and the text goes in at the caret through `pasteAttachmentTokens` (so `[att:…]` markers become chips) or as plain text. The host reads `env.clipboard` and answers straight to a ready view (`_postTerminal`), refusing more than 1 000 000 characters in the status bar. Editor only (`machine` row in `commands.ts`): Chrome and the website keep a plain Send. While Paste shows, the send menu does not open. **Not run inside VS Code yet.**
+
 **The send-options chevron beside Send shows only where there is no hover** (`@media (hover: none)`,
 `.ghost.round.send-options`): a pointer opens the send menu by hovering Send (or ↑/↓ on it), and
 the chevron there pushed Send left in a 58 px slot — reported as a bug. A touch screen (the
 Exchange website on a phone) cannot hover, so it keeps the chevron.
 
+The composer tabs' underline is **one element**, `composerIndicator`, moved by `paintIndicator` in `preview-src/chat.ts` (asked for, so it slides instead of each tab fading its own). Three rules keep it honest: a switch passes `animate` so it animates from wherever it is now; a slow drag paints it part of the way to the neighbour with a short .12s transition (`setComposerPull`), and a step must **not** repaint the pull first, or the animation starts from the wrong place (`composerSwipeStep` takes it from the drag); and every change of tab order or visibility repaints it, since the tab's offset is what it is placed by. `.composer-tabs` has `position: relative` for that reason. Its shape is a capsule, 2px tall with both ends rounded (`border-radius: 999px`, asked for — a cap rounded on top only read as pointed at the foot; 3px was then asked to be a pixel thinner). The `ResizeObserver` on the row and its buttons repaints **animated**, never instantly: the active tab turns bold, which resizes the buttons right after a click or Alt+letter, and a snapping repaint there cancelled the slide `setComposerTab` had just started.
+
+**A held slow pull is not reset by a pause** (asked for: pull it through): a trackpad sends no wheel events while the fingers rest, so the 200 ms gesture gap and the view's reset timer used to drop the pull mid-drag. A pull with something gathered keeps its axis and distance for `holdMs` (350 ms) of quiet, short on purpose so a released swipe puts the underline back under the active tab at once (asked for; a lifted finger and a resting one are both silence, so 350 ms is the compromise), and the view's repaint-to-rest timer waits `holdMs + 40`; only a longer silence, a flick's lockout, or a reversal lets go.
+
 ### Lists and links while composing
 
-`preview-src/composerFormatting.ts` keeps list edits and link detection independent of the DOM. Enter continues `-`, `*`, `+`, `1.`, `1)` and letter (`a.`, `A)`, up to z) items; typing `1 ` normalizes the starter to `1. `. Tab/Shift+Tab indent/outdent selected list lines, empty items leave the list or return to their parent marker, and fenced code is left untouched. Enter outside a list keeps sending; the Send button and modified Enter remain available inside lists. Shift+Enter inserts a plain line break. User prompts render nested lists through `renderPromptText`, keeping inline attachment badges and link actions.
+`preview-src/composerFormatting.ts` keeps list edits and link detection independent of the DOM. Enter continues `-`, `*`, `+`, `1.`, `1)` and letter (`a.`, `A)`, up to z) items. A marker needs its `.` or `)`: a bare `1 ` or `a ` is plain text and starts nothing (`composerFormatting.test.ts`). **Mandatory rule: an ordered list starts only at `1` or `a`/`A`, never at `2`, `3`, `b`, `c` …** (asked for; do not relax it — `composerListContinues`): `3. x` or `b) y` with no list above is a sentence — Enter sends it and a sent message shows it as text, not as an `<ol start=3>`; such an item counts only while it continues the same kind of list (number or letter case, and delimiter) at the same indent, blank lines and deeper items between skipped. Tab/Shift+Tab indent/outdent selected list lines and renumber a moved ordered item (`composerNumberAt`: a new nested list restarts at 1/a, an outdented item continues its parent list), empty items leave the list or return to their parent marker, and fenced code is left untouched. Enter outside a list keeps sending; the Send button and modified Enter remain available inside lists. Shift+Enter inserts a plain line break. User prompts render nested lists through `renderPromptText`, keeping inline attachment badges and link actions.
 
 The input mirror highlights HTTP(S) and `www.` links through `markComposerText` without changing the underlying text or its widths. Link hit testing runs through the textarea: a click opens internally, ⌘/Ctrl+click opens externally, and right-click offers both browsers and Copy Link through `linkMenu`. Selecting or dragging text does not open it. A single-slash scheme such as `https:/google.com` is normalized only for navigation/copy; the typed text stays intact. The host's existing `openLink` scheme validation still owns navigation.
 
@@ -7770,7 +7870,7 @@ The input mirror highlights HTTP(S) and `www.` links through `markComposerText` 
 
 **A draft attachment is a token in the message text, `[@N label]`** (asked for, replacing the chip row above the box). `syncAttachmentTokens` in `chat.ts` inserts it at the caret, follows label changes, and removes the attachment when its token is deleted. The mirror and sent prompts share `markAttachmentTokens`, file/folder/type icons and capsule styling; invisible character slots reserve spacing so the textarea caret stays aligned. The icon is anchored at the end of its reserved prefix with a fixed 3 px gap before the label, even for multi-digit references; sent badges omit the unused remove-control space. Sent inline tokens replace duplicate attachment rows. Click opens the saved content; context menus copy, cut/delete drafts, or attach sent snapshots again.
 
-**Every space inside a token is a no-break space** (`attachmentToken`): a plain space let the textarea break a line inside a badge, so the line's last badge lost its × to the next line. The parsers accept either, so drafts and history from before still read. A token goes in with a space before it only when it would touch the word before, and one after only when a word follows (`spacedToken`, also at the edges of a paste). A click on a sent badge opens it and drops a selection held inside it; its menu's **Insert into message** puts it at the caret. A token acts as one character for selection and editing. The textarea owns mouse dragging of whole badges, with a lightweight preview, Escape/outside-drop cancellation, and no dependence on native textarea drag initiation. Sent badges use native drag with the same rich payload; the textarea accepts it at the drop position. The remove control is hit-tested through the mirror and highlights on hover. Browser/editor attachment suggestions live in toolbar menus; the row retains persistent terminal pins.
+**Every space inside a token is a no-break space** (`attachmentToken`): a plain space let the textarea break a line inside a badge, so the line's last badge lost its × to the next line. The parsers accept either, so drafts and history from before still read. A token goes in with a space before it only when it would touch the word before, and one after only when a word follows (`spacedToken`, also at the edges of a paste). A click on a sent badge opens it and drops a selection held inside it; its menu's **Insert into message** puts it at the caret. A token acts as one character for selection and editing. The textarea owns mouse dragging of whole badges, with a lightweight preview, Escape/outside-drop cancellation, and no dependence on native textarea drag initiation. Sent badges use native drag with the same rich payload; the textarea accepts it at the drop position. The remove control is hit-tested through the mirror and highlights on hover. **A badge that opens a line in the box starts its capsule at the line's left edge**, the same 12 px as the pinned chips under it (asked for): `alignLineStartBadges` (after every `paintInput` and on the mirror's resize) moves that capsule left over its transparent `[` with a negative `margin-left` (never padding: a badge that grew there was wider than the same badge mid-line). It also draws every label 21 px after the reserved `@N` starts (`badgeLabelOffset`: the icon, 5 px in and 12 px wide, plus a 4 px gap) by pulling the gap span in with a negative margin: the transparent `@N` and its spaces are the textarea's own glyphs, so `@7` and `@25` reserved different widths and the gap before the label grew with the number. The closing `]` takes the same amount back as `margin-left`, so what follows the badge, and the caret there, stay put; only a caret or selection *inside* a label is off by that amount, which is invisible since the textarea's glyphs are transparent. Sent badges get the same fixed 21 px slot in CSS (`.att-token-prefix` outside `.input-mirror`), whose `@N` is hidden with a negative `text-indent` — and the icon inside it resets that to 0, since `text-indent` is inherited and threw the icon out of the badge. Browser/editor attachment suggestions live in toolbar menus; the row retains persistent terminal pins.
 
 Copy/cut writes a portable `text/plain` marker (`[att:encoded-id|label]`) plus `application/x-ai-browser-attachments`, and asks the host to retain copied snapshots (`rememberAttachments`, editor-only, bounded to the 100 most recently copied items). Thus cut or sending the source does not destroy screenshot/page/selection clipboard content. The `att:` marker uses the stable attachment ID instead of a per-draft `@N`; it survives a text-only round trip through another application. `attachmentMarkers.ts` decodes these markers into the existing pending-reference flow. Sent-badge context copy and fully selected badges use the same format; Copy path remains a separate action. The host can also resolve IDs against saved attachments in currently loaded conversations when no clipboard snapshot remains. Copied annotations carry their saved text/image snapshot; live page bindings remain with the original chat and are stripped from copies. Paste reserves unused temporary references before input synchronization, then resolves them by request and chat ID; new chips wait for remapping even when state arrives first. Pending pastes disable Send. Replies for inactive chats do not edit the current draft. The host copies retained/live attachments or reconstructs a file/folder from its path; failures leave readable text.
 
@@ -7779,8 +7879,8 @@ From the `+` menu, all held in the host until the message is sent: **Screenshot*
 takes it) and goes to the agent as an image block — base64 for Claude, a `data:` URL for Codex;
 **Element** is the Copy Element Markdown, through `pickElementContext`, which hands the picker
 the tab explicitly; **Page address** is the URL and title (`pageTitle` + `plainInPrompt`, since
-the title is page-chosen text going into a prompt), plus one line naming the tab by our id (`tabIdOf`) and how the `ai-browser` tools reach it — tools named by suffix (#144), a `browser_state` check before acting because caller pins and sharing override focus, `browser_select_tab` when needed (or a user assignment when sharing prevents selection), and a plain "the server is off" when it is not running (`_tabNote`); **Share page** starts with the same URL, title and MCP note but follows the selected browser tab while it remains in the draft; **the globe button attaches the tab it opens as a page address, and the chip follows it too** — the first `onDidOpenBrowserTab` within 15 s of the press goes to the chat tab it was pressed in (`_awaitOpenedPage`), and tracked attachments have their address, title and active-or-not rebuilt under the same chip id on `onDidChangeBrowserTabState` / `onDidChangeActiveBrowserTab` until the message is sent or the chip removed (`_livePages`, `_refreshLivePages`); `preserveAttachmentReference` carries the existing `@N` to each refreshed chip; closing the browser tab removes its tracked page chips from all chat drafts and refreshes the chat, and the panel opens no tab, so attaches nothing; **File** is the path only, since both agents
-read files themselves.
+the title is page-chosen text going into a prompt), plus one line naming the tab by our id (`tabIdOf`) and how the `ai-browser` tools reach it — tools named by suffix (#144), a `browser_state` check before acting because caller pins and sharing override focus, `browser_select_tab` when needed (or a user assignment when sharing prevents selection), and a plain "the server is off" when it is not running (`_tabNote`); **Share page** starts with the same URL, title and MCP note but follows the selected browser tab while it remains in the draft; **the globe button attaches the tab it opens as a page address, and the chip follows it too** — the first `onDidOpenBrowserTab` within 15 s of the press goes to the chat tab it was pressed in (`_awaitOpenedPage`), and tracked attachments have their address, title and active-or-not rebuilt under the same chip id on `onDidChangeBrowserTabState` / `onDidChangeActiveBrowserTab` until the message is sent or the chip removed (`_livePages`, `_refreshLivePages`); `preserveAttachmentReference` carries the existing `@N` to each refreshed chip; closing the browser tab removes its tracked page chips from all chat drafts and refreshes the chat, and the panel opens no tab, so attaches nothing; **File…** and **Folder…** take several at once (the system dialog, `canSelectMany`; `_pickPaths`) and attach paths only, since both agents
+read files themselves — a folder chip is a `file` chip whose label ends in `/`. The browser list — open tabs to take, Google Chrome, VS Code Browser — is the globe button's only (`browserMenuItems`), not repeated in "+" (asked for). Folder… is editor-only (`editorOnly` in `attachItems`): Chrome and the website upload files and cannot name a folder on the editor's machine; Chrome's File picker takes several files too. The terminal's Insert has the same Folder… row (`TerminalInsertKind` `folder`). **Both menus are grouped, in one order** (asked for; `menuGroups`): what is open now (the suggested file or selection; Insert's "Editor"), Files, Browser page — cheapest first: address, pinned tab, screenshot, element, recording —, Annotations, then Chats and terminals ("+" only). A group with nothing in it is left out, and `openMenu` moves a group heading off a row the surface hides onto the next one shown.
 
 **What is open is offered, not attached** (asked for): the file in front whatever editor shows it — the text editor
 (`activeTextEditor`, `file` scheme), else the active group's active tab (`frontTabFile`: a custom
@@ -8308,7 +8408,7 @@ also capped at 20 entries per turn on average (`windowEntries` in
   which rebuilt the thread on every post of a long agent turn.
 - **The website's 5 MB trim adds what it cut to `entriesOffset`**, or the indices above point at other messages.
 - The host keeps the whole conversation in memory; only what the views hold is cut.
-- **The Conversation and Bash tabs show their newest 100 rows** (`composerListStep` in `chat.ts`), with a
+- **The Prompts and Bash tabs show their newest 100 rows** (`composerListStep` in `chat.ts`), with a
   "Show 100 more" row at the foot. It bounds the DOM only: the state keeps everything the window holds. The
   running commands are always listed. The counts reset when another chat is shown. Measured on the editor's
   webview only; the Chrome panel and the website run the same `chat.js`, so they get it on rebuild.
@@ -8598,7 +8698,21 @@ quietly read as "the Mac's language".
 
 **Not built:** recording outside macOS 26 — Windows has `Windows.Media.SpeechRecognition` and
 Linux nothing built in, each a helper of its own; live text while speaking (SpeechAnalyzer can
-stream, the bar would need room for it); a keyboard shortcut to start. Verified: the helper
+stream, the bar would need room for it); a keyboard shortcut to start.
+
+**Planned (2026-11-07, deferred by the user): cross-platform capture and a choice of
+transcriber, both set in Chat Settings.** Studied OpenAI's `openai.codex-audio` companion
+(26.1021): it is capture only — `extensionKind: ["ui"]`, five private commands
+`_codex.microphone.{available,start,read,stop,cancel}` taking a UUID, `read` answering base64
+16-bit mono PCM at 16 kHz in 100 ms frames (`new PvRecorder(1600)` in a worker thread), a 5 s
+buffer between reads, cancelled after 15 s unread, ~11 min at most; the Codex extension
+transcribes through OpenAI itself (`codex app-server` has no transcription method). **Do not
+call its commands**: private, proprietary licence, present only where Codex is installed, and no
+transcription. Take the idea instead: vendor Picovoice `@picovoice/pvrecorder-node` (Apache-2.0,
+prebuilt `.node` for mac arm64/x64, win amd64/arm64, linux x64) staged like node-pty, so the
+microphone works everywhere; a settings section to pick the input device and the transcriber —
+SpeechAnalyzer on macOS 26 (as now), Windows' on-device recogniser, a local whisper.cpp model, or
+a remote model with the user's key in SecretStorage (as the OpenRouter key is). Verified: the helper
 against the microphone with speech played on the speakers (Russian transcribed, stop, cancel, the
 limit, an unknown locale), `VoiceRecording` driven from Node with the real helper (file gone after
 both endings), `ChatTab.send` with a voice and a page attachment (`sleepLifecycle.test.ts`: the
@@ -8774,10 +8888,12 @@ through an injected factory, since a module `npm test` loads may not import it a
 
 #### The toolbar, and the key bar for phones
 
-One toolbar at the very bottom of the terminal in front (below the stage and the key bar), in three zones — state, agent mark, lease, Insert and Pause at the left; Ask agent and Send to chat in the centre; Clear and Scroll to bottom at the right edge, with Insert, Clear and Scroll to bottom icon-only — built once and changed in place (#365): name and state,
+One toolbar, a single row at the very bottom of the terminal (`nowrap`, `overflow: hidden`), in three zones — state, lease and the icon-only Insert, Browser and Messages on the left; Ask agent and Send to chat in the middle; the icon-only Clear and Scroll to bottom at the right — built once and changed in place (#365), the labels hidden below a 520 px terminal. **It is compact** (asked for: at least a quarter lower): 24 px buttons (`--terminal-tool-h`) and 2 px padding make a 28 px row where it was 37 px, and an icon-only button is a 24 px square with 7 px corners (asked for: a 26 px row left them rectangles); a coarse pointer keeps 40 px buttons. **Its details, asked for as "the best UX you can"**: tooltips are drawn by the chat's `hoverTip` (`data-tip`, the toolbar's `tooltip` option; each button carries an empty `title` so the row's folder tooltip does not show under it); the row is one tab stop and ←/→/Home/End move inside it (`rovingIndex`, the ARIA toolbar pattern); a press has a firmer background and half a pixel of travel (none under reduced motion); Ask agent's spark is in the accent colour as the row's main action; **Scroll to bottom follows the scroll** (`trackScroll` in `terminalView.ts`, from xterm's `onScroll`, `onWriteParsed` and a wheel): dimmed at the end, plain when scrolled up, accent with a dot when output arrived below (`ScrollState`, `scrollTip`); the ended state is a pill, red for a non-zero exit code; the messages toggle shows a selected background while the conversation is shown. A vertical panel at the terminal's right was built for the same request and turned down — the request was a lower row, not a side panel. What it carries: name and state,
 **Ask agent**, **Send to chat** (the selection, or the last lines, as a `selection` chip — fenced,
 control characters out, at most 200 000 characters), **Insert** (+) and **Browser** (a globe beside it: the chat's own globe menu, VS Code browser or Chrome), Clear, Scroll to bottom, and
-the agent mark with **Pause agent input / Resume agent input**. Its buttons prevent default on
+**Show / Hide messages** (an eye when the conversation is shown, a comment when it is not; its state is keyed on
+`data-messages-state`, since the toolbar creates it already labelled "Show messages"). Pause agent input lives in the
+tab's context menu only. Its buttons prevent default on
 pointer and mouse down, so the terminal keeps the keyboard. Below the terminal, on a coarse
 pointer (or forced per device), the **key bar**: Esc, Tab, sticky Ctrl/Alt, arrows honouring DECCKM
 (`ESC O A` in application mode — vim, less, tmux), Home/End, a Ctrl+letter strip and a drawer.
@@ -8798,15 +8914,45 @@ the editor's machine.
   data, never any output itself. A send that did not reach the agent clears the "told" mark, so it is
   told again (#540).
 - **Ask agent** (toolbar or tab menu) pins the terminal to a new conversation or an open one, with
-  the selection as the question; **"+" → Terminal…** in the composer pins an existing terminal, or a
+  the selection as the question — the terminal stays in front and that conversation docks under it (messages shown,
+  its message box focused: `focusInput` with `dock`), with no switch to the chat tab; **"+" → Terminal…** in the composer pins an existing terminal, or a
   new one, to this conversation (opened on `setTimeout(0)`, or the same click closes it). A row past
-  the tab limit is disabled with its reason.
-- **Watch only** (`mode: 'watch'`): the agent may read, never type (`watchRefusal`). The refusal
+  the tab limit is disabled with its reason. Its menu is grouped under headings (asked for), through
+  `menuGroups` like the "+" and Insert menus: **New chat with** (one row per agent, labelled with the agent's
+  name alone, since the heading says "new chat"; or one disabled "No agent available") and **Open chats**. On the
+  website the new chats are hidden by the form rule and their heading goes with them.
+- **Send to chat** (toolbar, tab menu, the touch bubble's Chat) asks which open conversation gets the text (asked for:
+  it went to the one in front, often not the one meant): a menu of every open chat, the one in front first and
+  checked (`chatTargetRows`, `sendToChatMenu`). The text is taken when the button is pressed, before the menu takes
+  focus off xterm; `terminalToChat` carries `tabId`, the host checks it and brings that conversation forward. No
+  `tabId` (an older view) still means the one in front.
+- **Watch only** (`mode: 'watch'`): the agent may read, never type (`watchRefusal`). It is set **after** the pin,
+  never before (asked for): a switch in the terminal toolbar right of Ask agent and Send to chat
+  (`terminal-tool-watch`, `role="switch"`), shown only while a conversation holds the terminal, which re-pins it to
+  that conversation with the other mode; the pin chip's menu has the same row. The Ask agent and "+" → Terminal…
+  menus no longer carry a pre-pin Watch only toggle, so every new pin starts in control mode. The refusal
   comes after the CLI's approval card, so an approved card can still end refused.
 - **The typing gate** (`AgentTypingGate`, `terminalControl.ts`): agent input is refused for
   1.5 s after the user typed in that terminal, with `retryAfterMs`; **Pause agent input** is the
   emergency stop — every agent input refused until resumed, reading still allowed. Only the user's
   input feeds the gate. The agent's own input draws the "typing" mark for 3 s.
+
+#### The message box under a pinned terminal
+
+Asked for: a terminal pinned to a conversation shows that conversation's message box at its foot, so the user writes
+to the agent that drives it without leaving the terminal. **Nothing is built twice**: `renderTerminalDock` in `chat.ts`
+moves the existing `footer` node (message box, chips, skills tabs, question dock, Git footer) from `.chat-main` into
+`.terminal-main` while the terminal in front has `pinnedBy.tabId === state.activeTab`, and puts it back otherwise; the
+draft, attachments, send and menus are the conversation's own. The host keeps the two in step: `_syncTerminalOwner`
+makes the pinning tab the active one on `selectTerminal` and after a pin, without clearing the terminal front (so the
+conversation shown after leaving the terminal is the owner). The Alt+letter and Option+W handlers now exclude only
+`.terminal-host`, not the whole `.terminal-main`, or the dock's box would lose them. Not run inside VS Code yet.
+
+**In that column the footer shrinks, and only its panel gives way.** A composer tab's panel (Skills, Activity, Prompts, Bash, GitHub, Files) is sized against the whole view — 33vh, or the user's dragged height — while here it shares the column with the terminal and the docked messages, so opening one with the messages shown pushed the bottom of the message box past the column's foot. `.terminal-main > .footer` is a shrinkable flex column there, every part of it keeps its height except the composer, and inside the composer only `.composer-list` / `.skill-bar` shrink (to 68 px, then they scroll); the terminal stage keeps its 84 px and the docked thread shrinks with the panel. Checked in headless Chrome with `media/chat.css` at a 520 px column.
+
+**Moving the thread keeps it at the end.** Re-parenting a scroll container resets its `scrollTop` to 0, and the thread is shown in two places of different height, so switching chat ↔ terminal tab used to land the reader several messages up (`renderThread` then read "not at the end" from the reset). `moveThread` in `chat.ts` moves it, and a thread that was following the end (`threadFollowsEnd`, set from real scroll events only, ignored while `threadMoving`) is put back at the end at once and again on the next frame, after layout settles. Each placement (chat column, terminal column) keeps its own record per chat (`threadScrollByPlace`: at the end, or the offset), saved when the thread leaves it and restored when it comes back; a placement never visited, or one left at the end, shows the bottom. A single shared offset (the first fix) put a reader who had scrolled up at the top. Not run inside VS Code yet.
+
+The conversation can be shown above the box as well (asked for): an icon-only **Show / Hide messages** button in the terminal toolbar's left group (`.terminal-tool-messages` in `terminalToolbar.ts`; hidden until chat.ts shows it while the terminal is docked, and it asks for the toggle with a bubbling `terminal-messages-toggle` event, state per device in `localStorage` `aiBrowser.terminal.messages`) moves the same `thread` node into `.terminal-main`, and `renderThread` runs while a terminal is in front only in that state (it measures geometry). Its height is the user's: a handle above it (`.terminal-chat-resize`, pointer drag, double-click resets to 45%, clamped 80 px–70% of the column, `localStorage` `aiBrowser.terminal.messagesHeight`) sets `--terminal-chat-h` on `.terminal-main`. The handle takes no height: a transparent grab area (`::before`, 9 px) straddles the thread's top border and the hover line (`::after`, 2 px) is drawn solid over it — a translucent fill over the overlap let the sticky prompt and the thread's side padding show through, which read as two stubs at its ends (asked for). **The toolbar has no agent mark and no Pause button any more** (asked for); Pause agent stays in the tab's context menu, and one terminal is pinned to one conversation at a time. Column order by CSS `order`: the stage, key bar, toolbar, handle, messages, message box. `renderTerminalDock` puts the thread back before `blocked` when it is not shown. Not run inside VS Code yet.
 
 #### The `terminal_*` MCP tools
 
@@ -11121,6 +11267,31 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      textarea (`min-height` 36, `max-height` 168, so box plus margin keeps 68–200; 8 px between
      the last line and a chip) and `bottom: 32px` on the mirror, only while the row is shown;
      without it the text has the whole height.
+564. **A forced theme that overrides only the variables the chat itself names** → VS Code
+     puts default styles into every webview (`@layer vscode-default` in the shipped
+     `webview/browser/pre/index.html`): `blockquote` takes `textBlockQuote-background`, `code`
+     takes `textPreformat-*` with padding and a radius, `kbd` `keybindingLabel-*`, scrollbars
+     `scrollbarSlider-*`, `body` `editor-foreground`. Appearance → Light over a dark editor
+     forced the chat's own variables and left those, so a quote was a dark box with the light
+     theme's dark text in it, and code inside a code block sat on a dark strip. Fixed three
+     ways: `appearance.css` forces those variables (and the terminal's, the notification
+     icons', the JSON tokens') in both forced themes; `chat.css` resets `code` and `kbd` and
+     gives the quote an explicit background, since an unlayered rule beats the layer whatever
+     its specificity; and every light/dark rule is written
+     `:root[data-theme="light"] …, :root:not([data-theme]) body.vscode-light …` — a bare
+     `body.vscode-light` follows the editor, not the chat's own choice. The terminal re-reads
+     its colours when `data-theme` changes too. A harness that renders without the default
+     layer cannot show any of this: copy it from the installed VS Code first.
+565. **A code box drawn with `textCodeBlock-background` alone** → Light Modern's value is
+     `#f8f8f8`, the side bar's own background, so the approval card's command lost its box.
+     `--code-bg` mixes 4 % of the foreground into it.
+566. **An ordered list that starts anywhere but 1 or a** → `composerListItem` reads `3. x` and `b) y`
+     as list items, so Enter continued a list nobody started (`4.`, `c)`) and a sent message showed
+     `<ol start=3>`. **Mandatory rule:** a numbered list starts only at `1`, a letter list only at
+     `a`/`A`; a later number or letter is a list item only while it continues the same list above
+     (`composerListContinues` in the composer's Enter, and `composerListChecker` — the same rule, sharing its answers across lines — in `renderPromptText`). Every new
+     place that reads list markers must ask it too, and Tab/Shift+Tab renumber a moved item
+     (`composerNumberAt`) so nesting never makes a list that starts at 2.
 
 ## Special cases and non-obvious decisions
 
@@ -11143,9 +11314,10 @@ buttons hold `<span>`s now.
 
 ### Bash composer tab and native shell task tracking
 
-The former History composer tab is labelled **Conversation**; its stored `history`
-identifier is retained so device ordering, visibility and draft state survive the rename.
-Alt+O opens Conversation (Alt+H remains an alias); Alt+C still opens Chat. **Bash**
+The former History composer tab, then Conversation, is labelled **Prompts** (renamed on
+request, 2026-11-09: "Review" was turned down as reading like code review); its stored `history`
+identifier is retained so device ordering, visibility and draft state survive the renames.
+Alt+P opens Prompts (Alt+O and Alt+H remain aliases); Alt+C still opens Chat. **Bash**
 (Alt+B) lists every reported `command` tool call, newest first, with a Running section
 above All calls. Clicking a call reveals its existing tool card and output, including
 inside a collapsed Minimal turn. Earlier calls use the same history pagination.

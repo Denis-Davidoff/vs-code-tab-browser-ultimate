@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { installChatSelectionCopy } from './chatSelection.ts';
 
-function fixture(serialize?: (selection: Selection) => string | undefined) {
+function fixture(serialize?: (selection: Selection) => string | { text: string; html?: string } | undefined) {
   const handlers = new Map<string, (event: any) => void>();
   const copied: string[] = [];
   const anchor = {}, focus = {};
@@ -34,13 +34,34 @@ test('Ctrl+C and Cmd+C send exact selected text to the editor without clearing s
   }
 });
 
-test('native menu copy uses the editor clipboard even without a browser clipboard payload', () => {
+test('native menu copy fills the event, and uses the editor clipboard only without a browser clipboard payload', () => {
   const f = fixture();
   const event = f.dispatch('copy');
   assert.equal(event.prevented, true);
   assert.deepEqual(event.data, ['text/plain', f.selection.toString()]);
+  // Posting to the host here would overwrite the event's HTML with plain text.
+  assert.deepEqual(f.copied, []);
   f.dispatch('copy', { clipboardData: null });
-  assert.deepEqual(f.copied, [f.selection.toString(), f.selection.toString()]);
+  assert.deepEqual(f.copied, [f.selection.toString()]);
+});
+
+test('Cmd+C puts Markdown and HTML on the clipboard through execCommand, without the host', () => {
+  const f = fixture(() => ({ text: '**bold**', html: '<strong>bold</strong>' }));
+  (f.document as any).execCommand = (command: string) => {
+    assert.equal(command, 'copy');
+    const copied = f.dispatch('copy');
+    assert.deepEqual(copied.data, ['text/plain', '**bold**', 'text/html', '<strong>bold</strong>']);
+    return true;
+  };
+  assert.equal(f.dispatch('keydown').prevented, true);
+  assert.deepEqual(f.copied, []);
+});
+
+test('Cmd+C falls back to the host when execCommand fires no copy event', () => {
+  const f = fixture(() => ({ text: '**bold**', html: '<strong>bold</strong>' }));
+  (f.document as any).execCommand = () => true;
+  f.dispatch('keydown');
+  assert.deepEqual(f.copied, ['**bold**']);
 });
 
 test('editing fields, empty selections, selections outside the chat and unrelated keys retain native behavior', () => {
@@ -63,6 +84,6 @@ test('selected sent badges use their portable serialization for keyboard and men
   const f = fixture(() => 'Text [att:id|file.ts]');
   f.dispatch('keydown');
   const copied = f.dispatch('copy');
-  assert.deepEqual(f.copied, ['Text [att:id|file.ts]', 'Text [att:id|file.ts]']);
+  assert.deepEqual(f.copied, ['Text [att:id|file.ts]']);
   assert.deepEqual(copied.data, ['text/plain', 'Text [att:id|file.ts]']);
 });

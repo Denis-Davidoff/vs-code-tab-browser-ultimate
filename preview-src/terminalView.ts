@@ -23,10 +23,10 @@
  *    acknowledged as xterm parses it (`terminalFlow.ts`); a replay on attach
  *    restores a screen the page lost.
  *
- * The layout is a column: the stage the hosts
- * lie in (`.terminal-host` is absolutely positioned inside it, so FitAddon fits to
- * what the toolbar and the key bar leave), and the touch key bar
- * (`terminalKeyBar.ts`, only on a touch device or when forced), then the toolbar (`terminalToolbar.ts`) at the very bottom. Every byte that
+ * The layout is a column: the stage the hosts lie in (`.terminal-host` is absolutely
+ * positioned inside it, so FitAddon fits to what the toolbar and the key bar leave),
+ * the touch key bar (`terminalKeyBar.ts`, only on a touch device or when forced), then
+ * the toolbar (`terminalToolbar.ts`) at the very bottom. Every byte that
  * leaves goes through `sendInput`, however it was typed.
  */
 
@@ -40,7 +40,7 @@ import { AckBatcher, AckLedger, EarlyOutput, OutputSequencer, ackSize } from './
 import { sanitizePaste, splitInput, terminalPasteLimit } from './terminalPaste';
 import { lastOutput, type ScreenRow } from './terminalTabs';
 import { createKeyBar, readStored, writeStored } from './terminalKeyBar';
-import { createToolbar } from './terminalToolbar';
+import { createToolbar, type ScrollState } from './terminalToolbar';
 import { createTouchUi } from './terminalTouchUi';
 import { findLinks, rangeCoversRow, spanToRange } from './terminalLinks';
 import { fontSizeStorageKey, parseFontPref } from './terminalTouch';
@@ -59,6 +59,11 @@ export interface TerminalViewOptions {
 	/** "Insert": the chat's attachment menu, each choice inserted into this terminal (`terminalInsert`). Absent: no button. */
 	readonly insertMenu?: (anchor: HTMLElement, id: string) => void;
 	readonly openBrowser?: (anchor: HTMLElement) => void;
+	/**
+	 * "Send to chat": the chat's menu of open conversations, anchored on `anchor`; `send` carries the text taken
+	 * when the button was pressed to the one picked. Absent: sent to the conversation in front.
+	 */
+	readonly chatMenu?: (anchor: HTMLElement, id: string, send: (tabId: string) => void) => void;
 	/** A link printed in the terminal was clicked: the built-in browser, or the system's with `external` (⌘ / Ctrl-click). Absent: no links. */
 	readonly openLink?: (url: string, external: boolean) => void;
 	/** Whether a message may be sent from this surface (the control table). Absent: all. */
@@ -73,6 +78,8 @@ export interface TerminalViewOptions {
 		toggle(id: string): void;
 		onChange(listener: () => void): void;
 	};
+	/** Draws a toolbar button's tooltip from its `data-tip` (the chat's `hoverTip`). Absent: native titles. */
+	readonly tooltip?: (anchor: HTMLElement) => void;
 }
 
 export interface TerminalView {
@@ -84,8 +91,8 @@ export interface TerminalView {
 	/** Focuses the terminal in front; false when none is. */
 	focusFront(): boolean;
 	hasSelection(id: string): boolean;
-	/** The selection, or the last lines of the screen, sent to the conversation in front. */
-	sendToChat(id: string): void;
+	/** The selection, or the last lines of the screen: with an anchor, to the chat picked in a menu there; without, to the one in front. */
+	sendToChat(id: string, anchor?: HTMLElement): void;
 }
 
 /** The last lines of the screen "send last output to the chat" takes. */
@@ -122,6 +129,8 @@ interface Entry {
 	resizeTimer?: ReturnType<typeof setTimeout>;
 	readonly detachTouch: () => void;
 	readonly links?: { dispose(): void };
+	/** Where it is scrolled, for the toolbar's Scroll to bottom (see `trackScroll`). */
+	scroll: ScrollState;
 }
 
 /** A soft keyboard resizes the stage on every frame of its animation: the PTY is told once, this long after the last one. */
@@ -180,11 +189,14 @@ export function createTerminalView(options: TerminalViewOptions): TerminalView {
 	}
 
 	// The editor's colour theme changes by rewriting the body's class and style.
+	// The chat's own Appearance choice is `data-theme` on the root, which swaps the same variables.
 	let themeTimer: ReturnType<typeof setTimeout> | undefined;
-	new MutationObserver(() => {
+	const themeObserver = new MutationObserver(() => {
 		clearTimeout(themeTimer);
 		themeTimer = setTimeout(applyTheme, 100);
-	}).observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
+	});
+	themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
+	themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
 	/* ------------------------------------------------------------ layout */
 
@@ -279,11 +291,23 @@ export function createTerminalView(options: TerminalViewOptions): TerminalView {
 		return rows;
 	}
 
-	function sendToChat(id: string): void {
+	/** The selection, or the last lines, of the terminal: what "Send to chat" carries. Empty: nothing to send. */
+	function chatText(id: string): string {
 		const entry = entries.get(id);
-		if (!entry) { return; }
+		if (!entry) { return ''; }
 		const text = entry.term.hasSelection() ? entry.term.getSelection() : lastOutput(selectionRows(entry.term), lastLineCount);
-		if (text.trim()) { post({ type: 'terminalToChat', id, text }); }
+		return text.trim() ? text : '';
+	}
+
+	function sendToChat(id: string, anchor?: HTMLElement): void {
+		// Taken now: the menu's click takes the focus off xterm, and the screen may move on while it is open.
+		const text = chatText(id);
+		if (!text) { return; }
+		if (anchor && options.chatMenu) {
+			options.chatMenu(anchor, id, tabId => post({ type: 'terminalToChat', id, text, tabId }));
+			return;
+		}
+		post({ type: 'terminalToChat', id, text });
 	}
 
 	function keyHandler(entry: Entry): (event: KeyboardEvent) => boolean {
@@ -427,8 +451,9 @@ export function createTerminalView(options: TerminalViewOptions): TerminalView {
 		openBrowser: options.openBrowser,
 		sendToChat,
 		selection: id => entries.get(id)?.term.getSelection() ?? '',
-		clear: id => { entries.get(id)?.term.clear(); },
-		scrollToBottom: id => { entries.get(id)?.term.scrollToBottom(); },
+		clear: id => { const entry = entries.get(id); if (entry) { entry.term.clear(); trackScroll(entry, false); } },
+		scrollToBottom: id => { const entry = entries.get(id); if (entry) { entry.term.scrollToBottom(); trackScroll(entry, false); } },
+		tooltip: options.tooltip,
 		lease: options.lease,
 		gate: options.gate,
 	});
@@ -512,7 +537,12 @@ export function createTerminalView(options: TerminalViewOptions): TerminalView {
 			opened: false, attached: false, written: false, focusWhenShown: false, focusExplicit: false,
 			detachTouch,
 			links: options.openLink ? term.registerLinkProvider({ provideLinks: (y, callback) => callback(linksAt(term, y)) }) : undefined,
+			scroll: 'bottom',
 		};
+		term.onScroll(() => trackScroll(entry, false));
+		term.onWriteParsed(() => trackScroll(entry, true));
+		// A wheel scroll of the viewport: read where it landed once it has moved.
+		host.addEventListener('wheel', () => requestAnimationFrame(() => trackScroll(entry, false)), { passive: true });
 		entry.observer.observe(host);
 		// A sticky Ctrl or Alt of the key bar applies to what xterm's own textarea typed as well (a hardware keyboard on a tablet).
 		term.onData(data => sendInput(summary.id, pasting ? data : bar.applySticky(data)));
@@ -564,6 +594,16 @@ export function createTerminalView(options: TerminalViewOptions): TerminalView {
 		entry.term.dispose();
 		entry.host.remove();
 		entry.exitBar.remove();
+	}
+
+	/** At the end, above it, or above it with output written since: only a change reaches the toolbar. */
+	function trackScroll(entry: Entry, wrote: boolean): void {
+		const buffer = entry.term.buffer.active;
+		const atBottom = buffer.viewportY >= buffer.baseY;
+		const next: ScrollState = atBottom ? 'bottom' : wrote || entry.scroll === 'new' ? 'new' : 'up';
+		if (next === entry.scroll) { return; }
+		entry.scroll = next;
+		if (front === entry.id) { toolbar.setScroll(next); }
 	}
 
 	function renderExit(entry: Entry): void {
@@ -624,6 +664,7 @@ export function createTerminalView(options: TerminalViewOptions): TerminalView {
 			bar.setFront(frontEntry ? { id: frontEntry.id, term: frontEntry.term } : undefined);
 			touchUi.setFront(front);
 			toolbar.update(frontEntry?.summary);
+			toolbar.setScroll(frontEntry?.scroll ?? 'bottom');
 			if (front !== previous && front) {
 				const entry = entries.get(front)!;
 				entry.focusWhenShown = true;

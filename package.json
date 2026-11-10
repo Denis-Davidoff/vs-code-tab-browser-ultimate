@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex + Gemini + OpenCode + Pi + OpenRouter",
 	"description": "Chat with browser, MCP for Chrome and embedded browser tab with AI capabilities, Claude, Codex, Gemini, OpenCode, Pi and OpenRouter integration (Qwen, LM Studio, Ollama, etc.)",
-	"version": "0.9.21",
+	"version": "0.9.23",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -1115,6 +1115,13 @@
 						"default": "chime",
 						"markdownDescription": "%configuration.chat.sound.name.description%"
 					},
+					"aiBrowser.chat.sound.githubRun": {
+						"type": "string",
+						"enum": ["none", "chime", "bell", "pop", "dingdong", "marimba", "harp", "kalimba", "glass", "bubble", "coin", "levelup", "sparkle", "sonar", "arcade", "droplet", "woodblock", "fanfare", "zen", "whistle", "synth", "lullaby", "triad", "ascend", "descend", "doorbell", "tick", "blip", "laser", "ufo", "boing", "piano", "celesta", "organ", "flute", "pluck", "gong", "twinkle", "heartbeat", "success", "notice", "trill", "jingle", "swoosh", "robot", "chirp", "harmony", "steel", "cosmic", "ping", "victory"],
+						"default": "success",
+						"title": "Sound When a Watched Actions Run Ends",
+						"markdownDescription": "%configuration.chat.sound.githubRun.description%"
+					},
 					"aiBrowser.chat.sound.volume": {
 						"type": "integer",
 						"minimum": 0,
@@ -1141,6 +1148,12 @@
 						"default": true,
 						"title": "Notify When Agents Finish",
 						"markdownDescription": "%configuration.chat.notifications.enabled.description%"
+					},
+					"aiBrowser.chat.notifications.githubRun": {
+						"type": "boolean",
+						"default": true,
+						"title": "Notify When a Watched Actions Run Ends",
+						"markdownDescription": "%configuration.chat.notifications.githubRun.description%"
 					},
 					"aiBrowser.chat.notifications.onlyWhenAway": {
 						"type": "boolean",

@@ -517,6 +517,7 @@ class ClaudeSession implements AgentSession {
 		}
 		this._process!.send({
 			type: 'user',
+			...(input.uuid ? { uuid: input.uuid } : {}),
 			message: { role: 'user', content },
 			parent_tool_use_id: null,
 			session_id: this._sessionId ?? '',
@@ -535,6 +536,52 @@ class ClaudeSession implements AgentSession {
 			throw new Error(vscode.l10n.t("Claude Code has not reported this agent as a task."));
 		}
 		await this._control.request('stop_task', { task_id: taskId });
+	}
+
+	/**
+	 * Claude Code's `cancel_async_message`: drops a message from its command
+	 * queue by the `uuid` it was sent with. Measured on 2.1.312: a message sent
+	 * while a tool ran, withdrawn before the tool ended, answered
+	 * `cancelled: true` and never reached the model; one already taken in
+	 * answers `false`.
+	 */
+	/**
+	 * Whether this process can withdraw a message (`withdraw`), asked of the
+	 * process itself rather than guessed from its version: `undefined` until it
+	 * answers. Measured on 2.1.312: a subtype it knows answers `success` —
+	 * `cancelled: false` for a uuid it never had — and one it does not answers
+	 * `error: "Unsupported control request subtype: …"`.
+	 */
+	public get canWithdraw(): boolean | undefined {
+		return this._canWithdraw;
+	}
+
+	private _canWithdraw: boolean | undefined;
+
+	private _probeWithdraw(control: ControlChannel, process: JsonLineProcess): void {
+		this._canWithdraw = undefined;
+		// A probe must never cost the start it rides on: anything it throws is a "no".
+		try {
+			control.request('cancel_async_message', { message_uuid: generateUuid() }).then(
+				answer => { if (process === this._process) { this._canWithdraw = typeof (answer as { cancelled?: unknown } | undefined)?.cancelled === 'boolean'; } },
+				() => { if (process === this._process) { this._canWithdraw = false; } },
+			);
+		} catch {
+			this._canWithdraw = false;
+		}
+	}
+
+	public async withdraw(uuid: string): Promise<boolean> {
+		const control = this.control;
+		if (!control) {
+			return false;
+		}
+		try {
+			const answer = await control.request('cancel_async_message', { message_uuid: uuid }) as { cancelled?: unknown } | undefined;
+			return answer?.cancelled === true;
+		} catch {
+			return false;
+		}
 	}
 
 	public stop(): void {
@@ -632,6 +679,7 @@ class ClaudeSession implements AgentSession {
 			id => { if (process === this._process) { this._onEvent.fire({ type: 'approvalDone', id }); } },
 		);
 		this._launched = { model, effort, ultracode };
+		this._probeWithdraw(this._control, process);
 		this._processCost = this._sessionId ? this._sessionCost : 0;
 		this._onEvent.fire({ type: 'processStarted' });
 

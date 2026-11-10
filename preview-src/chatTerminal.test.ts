@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import type { AttachmentChip, ChatTabSummary, TerminalTabSummary } from '../src/chat/chatProtocol';
 import {
-	agentControlRow, askAgentRows, chipShown, composerPlaceholder, conversationBadge, conversationRows, conversationShown, isPinChip,
+	agentControlRow, askAgentRows, chatTargetRows, chipShown, composerPlaceholder, conversationBadge, conversationRows, conversationShown, isPinChip,
 	looksLikeHomeDirectory, pinChipOpenTitle, pinChipStatus, pinRows, pinSummary, shortName, terminalMarks, type AskInput,
 } from './chatTerminal.ts';
 
@@ -21,8 +21,8 @@ const input = (over: Partial<AskInput> = {}): AskInput => ({
 test('Ask agent: a new chat per available agent, the picked one first, then the open conversations', () => {
 	const rows = askAgentRows(input({ defaultAgent: 'codex' }));
 	assert.deepEqual(rows.map(r => r.kind), ['new', 'new', 'tab', 'tab']);
-	assert.deepEqual(rows.filter(r => r.kind === 'new').map(r => r.label), ['New chat — Codex', 'New chat — Claude Code'], 'an agent that cannot start has no row');
-	assert.deepEqual(askAgentRows(input()).filter(r => r.kind === 'new').map(r => r.label), ['New chat — Claude Code', 'New chat — Codex'], 'no pick keeps the host\'s order');
+	assert.deepEqual(rows.filter(r => r.kind === 'new').map(r => r.label), ['Codex', 'Claude Code'], 'an agent that cannot start has no row');
+	assert.deepEqual(askAgentRows(input()).filter(r => r.kind === 'new').map(r => r.label), ['Claude Code', 'Codex'], 'no pick keeps the host\'s order');
 	const first = rows[0];
 	assert.ok(first.kind === 'new' && first.agent === 'codex' && !first.disabled);
 });
@@ -178,4 +178,17 @@ test('the pinned chip: recognised by its pin, drawn from its status, rebuilt whe
 	assert.deepEqual(chipShown(chip()), chipShown(chip()));
 	assert.notDeepEqual(chipShown(chip()), chipShown(chip({ terminalStatus: 'exited' })));
 	assert.notDeepEqual(chipShown(chip()), chipShown(chip({ label: 'build' })));
+});
+
+test('Send to chat: every open conversation, the one in front first and checked, with its agent and state', () => {
+	const rows = chatTargetRows(input({
+		terminal: terminal({ pinnedBy: { tabId: 'c', title: 'Chat c' } }),
+		tabs: [tab('a', { agent: 'claude', status: 'working', busy: true }), tab('b', { title: 'Docs', agent: 'codex' }), tab('c', { agent: 'claude' })],
+		frontTab: 'b',
+	}));
+	assert.deepEqual(rows.map(r => [r.tabId, r.label, r.description, r.checked]), [
+		['b', 'Docs', 'Codex · idle', true],
+		['a', 'Chat a', 'Claude Code · working', false],
+		['c', 'Chat c', 'Claude Code · idle · this terminal is pinned here', false],
+	]);
 });

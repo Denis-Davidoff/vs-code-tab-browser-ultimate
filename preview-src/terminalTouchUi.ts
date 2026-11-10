@@ -40,7 +40,7 @@ export interface TouchUiOptions {
 	readonly copy: (text: string) => void;
 	readonly paste: (id: string) => void;
 	/** Absent: the bubble has no "Send to chat". */
-	readonly sendToChat?: (id: string) => void;
+	readonly sendToChat?: (id: string, anchor?: HTMLElement) => void;
 	/** A new font size from a pinch; `final` when the fingers lifted (store it). */
 	readonly fontSize: (size: number, final: boolean) => void;
 	/** A tap that was not part of a gesture. */
@@ -128,10 +128,24 @@ export function createTouchUi(options: TouchUiOptions): TouchUi {
 		const t = frontTarget();
 		if (t) { t.term.clearSelection(); options.paste(t.id); }
 	});
-	const chatButton = options.sendToChat ? button('Chat', 'Send the selection to the chat', () => {
+	const chatButton: HTMLElement | undefined = options.sendToChat ? button('Chat', 'Send the selection to a chat you choose', () => {
 		const t = frontTarget();
-		if (t) { options.sendToChat!(t.id); t.term.clearSelection(); }
+		// The text is taken before the selection is cleared, and clearing it hides the bubble: so the menu of
+		// conversations hangs from a fixed point where this button was, not from the button (#428's shape).
+		if (t && chatButton) {
+			const rect = chatButton.getBoundingClientRect();
+			if (!chatAnchor.isConnected) { stage.ownerDocument.body.append(chatAnchor); }
+			chatAnchor.style.left = `${rect.left}px`;
+			chatAnchor.style.top = `${rect.top}px`;
+			chatAnchor.style.width = `${rect.width}px`;
+			chatAnchor.style.height = `${rect.height}px`;
+			chatAnchor.classList.remove('active');
+			options.sendToChat!(t.id, chatAnchor);
+			t.term.clearSelection();
+		}
 	}) : undefined;
+	const chatAnchor = stage.ownerDocument.createElement('span');
+	chatAnchor.className = 'pointer-anchor';
 	bubble.append(copyButton, lineButton, pasteButton, ...(chatButton ? [chatButton] : []));
 	stage.append(bubble);
 

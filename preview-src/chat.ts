@@ -12,11 +12,12 @@ import { presentationMarkers } from '../src/chat/visualizationProtocol';
 import { usageButtonLimit, usageButtonWindows } from '../src/chat/usageButton';
 import { updateVisualizationViews } from './visualizationViews';
 import { installChatSelectionCopy } from './chatSelection';
+import { selectionTree, treeHasMarkup, treeHtml, treeMarkdown } from './selectionRich';
 import { historyPeriodRange, type HistoryPeriod } from './historyPeriod';
 import { messageFileDiff, messageFileLabel, messageFiles } from '../src/chat/messageFiles';
 import { messageContent, type MessageContent, type MessageContentKind } from '../src/chat/messageContent';
 import { fileGridNeighbor, type FileArrow } from './fileNavigation';
-import { composerLinks, composerListEdit, composerListItem, type ComposerEdit } from './composerFormatting';
+import { composerLinks, composerListChecker, composerListEdit, composerListItem, type ComposerEdit } from './composerFormatting';
 import { codeBlock as mdCodeBlock, link as mdLink, placeholderNames, splitPlaceholders, toggleInline, toggleLines, type TextEdit } from './markdownEdit';
 import { attachmentMarker, readAttachmentMarkers, selectedAttachmentMarkers } from './attachmentMarkers';
 import type { TemporaryStorage } from '../src/core/temporaryFiles';
@@ -27,12 +28,12 @@ import { pastedFileLimit } from '../src/chat/pastedFiles';
 import { maxRecordingSeconds, minRecordingSeconds, readRecordingQuality, readRecordingSeconds, recordingProfiles, type RecordingQuality } from '../src/browser/recordingQuality';
 import { localFileLink } from '../src/chat/fileLinks';
 import { namesFile, resolveFileIcon, type FileIconTable } from '../src/chat/fileIconTable';
-import { canOfferPullRequest } from '../src/chat/githubStatus';
+import { canOfferPullRequest, runInFlight, runWatchKey, workflowFileUrl } from '../src/chat/githubStatus';
 import { sleepMinutes, sleepHours, exchangeAwakeMinutes, type SleepChoice } from '../src/power/sleepProtocol';
 import { isAgentAuthenticationError } from '../src/chat/agentAuthText';
 import { frontStripId, shouldFocusComposer, stripTabs, terminalAddition, terminalCloseText, terminalTabShown, terminalTabTitle, visibleTerminalFront, withPendingTitle, type StripTab } from './terminalTabs';
 import type { TerminalView } from './terminalView';
-import { agentControlRow, askAgentRows, chipShown, composerPlaceholder, conversationBadge, conversationRows, conversationShown, isPinChip, pinChipOpenTitle, pinChipStatus, pinRows, pinSummary, terminalMarks, unpinTitle } from './chatTerminal';
+import { agentControlRow, askAgentRows, type AskRow, chatTargetRows, chipShown, composerPlaceholder, conversationBadge, conversationRows, conversationShown, isPinChip, pinChipOpenTitle, pinChipStatus, pinRows, pinSummary, terminalMarks, unpinTitle } from './chatTerminal';
 
 /**
  * The nonce of the script that started this page, which the terminal's styles
@@ -72,7 +73,7 @@ import type {
 import type { ChatSound, ChatSoundSettings } from '../src/chat/chatProtocol';
 import { chatSoundLabels, playChatSound, unlockChatSound } from './chatSound';
 unlockChatSound(document);
-import { ComposerSwipe, swipeGapMs } from './composerSwipe';
+import { ComposerSwipe, holdMs, swipeGapMs } from './composerSwipe';
 import { controlOf, connectionPermissionGroups, readConnectionPermissions, type ConnectionPermission, type Availability } from '../src/chat/core/commands';
 import { chatConnectionsEnabled } from '../src/chat/core/chatFeatures';
 import { describePrice, formatContext, modelFromCatalogItem, modelSummary, parseOptionalNumber } from '../src/chat/openrouterView';
@@ -85,6 +86,14 @@ initChatAppearance();
 const vscode = createVsCodeChatHost();
 if (!window.aiBrowserChatHost) {
   installChatSelectionCopy(document, document.body, text => vscode.postMessage({ type: 'copy', text }), selection => {
+    // Markdown on text/plain and HTML on text/html, sent badges as their `[att:…|label]` tag.
+    const rich = selection.rangeCount ? selectionTree(selection.getRangeAt(0), document.body) : undefined;
+    if (rich) {
+      if (rich.badgeIds.length && gate('rememberAttachments').s === 'on') { post({ type: 'rememberAttachments', ids: [...new Set(rich.badgeIds)] }); }
+      if (!treeHasMarkup(rich.tree)) { return undefined; }
+      const text = treeMarkdown(rich.tree, { badge: (id, label) => attachmentMarker({ id, label }) });
+      return text.trim() ? { text, html: treeHtml(rich.tree) } : undefined;
+    }
     const selected = selectedAttachmentMarkers(selection, document.body);
     if (!selected) { return undefined; }
     if (gate('rememberAttachments').s === 'on') { post({ type: 'rememberAttachments', ids: selected.ids }); }
@@ -179,6 +188,13 @@ function liquidLoader(extra = ''): HTMLElement {
 function icon(name: string, extra = ''): HTMLElement {
 	if (name === 'loading') { return liquidLoader(extra); }
 	return el('i', { class: `codicon codicon-${name} ${extra}`.trim() });
+}
+
+/** VS Code's own spinner — the `loading` codicon, spinning — where the liquid loader is not wanted. */
+function codiconSpinner(extra = ''): HTMLElement {
+	const node = el('i', { class: `codicon codicon-loading codicon-modifier-spin ${extra}`.trim() });
+	node.setAttribute('aria-hidden', 'true');
+	return node;
 }
 
 function button(content: Child[], props: { class?: string; title?: string } = {}): HTMLButtonElement {
@@ -577,13 +593,12 @@ commitDismiss.addEventListener('click', () => answerCommit('dismissGitCommit'));
 /** Alt (Option) plus the label's first letter, which is drawn white as the hint. */
 const composerTabKeyMod = /Mac/.test(navigator.platform) ? '⌥' : 'Alt+';
 function composerTabLabel(text: string): Child[] {
-	const at = text === 'Conversation' ? 1 : 0;
-	return [text.slice(0, at), el('span', { class: 'composer-tab-key' }, text[at]), text.slice(at + 1)];
+	return [el('span', { class: 'composer-tab-key' }, text[0]), text.slice(1)];
 }
 const composerTabChat = button(composerTabLabel('Chat'), { class: 'composer-tab' });
 const composerTabSkills = button(composerTabLabel('Skills'), { class: 'composer-tab' });
 const composerTabActivity = button(composerTabLabel('Activity'), { class: 'composer-tab' });
-const composerTabHistory = button(composerTabLabel('Conversation'), { class: 'composer-tab' });
+const composerTabHistory = button(composerTabLabel('Prompts'), { class: 'composer-tab' });
 const composerTabBash = button(composerTabLabel('Bash'), { class: 'composer-tab' });
 const composerTabGithub = button(composerTabLabel('GitHub'), { class: 'composer-tab' });
 const composerTabFiles = button(composerTabLabel('Files'), { class: 'composer-tab' });
@@ -591,6 +606,11 @@ type ComposerTab = 'chat' | 'skills' | 'activity' | 'history' | 'bash' | 'github
 const composerTabButtons: Record<ComposerTab, HTMLButtonElement> = { chat: composerTabChat, skills: composerTabSkills, activity: composerTabActivity, history: composerTabHistory, bash: composerTabBash, github: composerTabGithub, files: composerTabFiles };
 const composerTabs = el('div', { class: 'composer-tabs' }, composerTabChat, composerTabSkills, composerTabActivity, composerTabHistory, composerTabBash, composerTabFiles, composerTabGithub);
 composerTabs.setAttribute('role', 'tablist');
+// One underline for the whole row, sliding between the tabs (asked for), instead of each tab
+// drawing its own that appears and fades. `paintIndicator` places it.
+const composerIndicator = el('span', { class: 'composer-tab-indicator' });
+composerIndicator.setAttribute('aria-hidden', 'true');
+composerTabs.append(composerIndicator);
 for (const tab of Object.values(composerTabButtons)) { tab.setAttribute('role', 'tab'); }
 /**
  * The composer tabs can be put in any order by dragging one onto another; the
@@ -639,6 +659,7 @@ for (const [name, b] of Object.entries(composerTabButtons) as [ComposerTab, HTML
 		if (e.clientX > r.left + r.width / 2) { b.after(moved); } else { b.before(moved); }
 		const order = [...composerTabs.children].map(c => (Object.entries(composerTabButtons) as [ComposerTab, HTMLButtonElement][]).find(([, t]) => t === c)?.[0]).filter(Boolean);
 		try { localStorage.setItem(composerOrderKey, JSON.stringify(order)); } catch { /* order is kept for this view only */ }
+		paintIndicator(false);
 	});
 }
 applyComposerOrder();
@@ -648,7 +669,7 @@ applyComposerOrder();
  * tab off the whole row is hidden, Chat's title with it.
  */
 const composerHiddenKey = 'aiBrowser.chat.composerTabsHidden';
-const optionalComposerTabs: [ComposerTab, string][] = [['skills', 'Skills'], ['activity', 'Activity'], ['history', 'Conversation'], ['bash', 'Bash'], ['files', 'Files'], ['github', 'GitHub']];
+const optionalComposerTabs: [ComposerTab, string][] = [['skills', 'Skills'], ['activity', 'Activity'], ['history', 'Prompts'], ['bash', 'Bash'], ['files', 'Files'], ['github', 'GitHub']];
 function readHiddenComposerTabs(): Set<ComposerTab> {
 	let saved: unknown;
 	try { saved = JSON.parse(localStorage.getItem(composerHiddenKey) ?? 'null'); } catch { saved = null; }
@@ -665,6 +686,7 @@ function setComposerTabShown(tab: ComposerTab, shown: boolean): void {
 	try { localStorage.setItem(composerHiddenKey, JSON.stringify([...hiddenComposerTabs])); } catch { /* kept for this view only */ }
 	applyComposerTabVisibility();
 	if (!shown && composerTab === tab) { setComposerTab('chat'); }
+	paintIndicator(false);
 }
 applyComposerTabVisibility();
 /**
@@ -814,16 +836,19 @@ composerResize.addEventListener('pointerdown', e => {
 		overviewHeight = Math.round(Math.min(overviewMax(), Math.max(overviewMin, startH + startY - m.clientY)));
 		applyOverviewHeight();
 	};
+	// Also on a lost capture (the webview losing focus mid-drag), which sends no pointerup: once only.
 	const end = () => {
 		composerResize.removeEventListener('pointermove', move);
 		composerResize.removeEventListener('pointerup', end);
 		composerResize.removeEventListener('pointercancel', end);
+		composerResize.removeEventListener('lostpointercapture', end);
 		composerResize.classList.remove('dragging');
 		vscode.setState({ ...(vscode.getState() ?? {}), overviewHeight });
 	};
 	composerResize.addEventListener('pointermove', move);
 	composerResize.addEventListener('pointerup', end);
 	composerResize.addEventListener('pointercancel', end);
+	composerResize.addEventListener('lostpointercapture', end);
 });
 composerResize.addEventListener('dblclick', () => {
 	overviewHeight = undefined;
@@ -870,20 +895,85 @@ document.addEventListener('wheel', event => {
 	if (!result.consume) { return; }
 	event.preventDefault();
 	composerSwipedAt = now;
-	setComposerPull(result.pull);
-	if (result.step && !composerSwipeStep(result.step)) { composerSwipe.blocked(); setComposerPull(0); }
+	if (result.step) {
+		// The step animates the underline from where a drag had taken it, so the pull is not painted first.
+		if (!composerSwipeStep(result.step)) { composerSwipe.blocked(); paintIndicator(true); }
+	} else {
+		setComposerPull(result.pull);
+	}
 }, { capture: true, passive: false });
 
+/** The visible composer tabs, in the order the row shows them. */
+function visibleComposerTabNames(): ComposerTab[] {
+	const names = Object.keys(composerTabButtons) as ComposerTab[];
+	return [...composerTabs.children]
+		.filter((b): b is HTMLButtonElement => b instanceof HTMLButtonElement && b.classList.contains('composer-tab') && !b.hidden)
+		.map(b => names.find(k => composerTabButtons[k] === b)!);
+}
+
+/**
+ * Places the underline under the tab in front. `pull` (-1..1, from a slow drag) paints it part of
+ * the way towards the neighbour the drag is heading for, so it follows the fingers (`setComposerPull` gives it a short
+ * .12s transition, so the pull reads as soft rather than jumping).
+ * Otherwise it animates from wherever it is now to the tab in front (or rests there when not `animate`).
+ */
+function paintIndicator(animate: boolean, pull = 0): void {
+	if (composerTabs.hidden) { return; }
+	markPullTarget(pull);
+	if (!pull) { composerIndicator.style.transitionDuration = ""; }
+	const active = composerTabButtons[composerTab];
+	let left = active.offsetLeft;
+	let width = active.offsetWidth;
+	if (pull) {
+		const names = visibleComposerTabNames();
+		const next = names[names.indexOf(composerTab) + (pull > 0 ? 1 : -1)];
+		if (next) {
+			const b = composerTabButtons[next];
+			// Magnet: the underline leans towards whichever tab is nearer, so it settles onto a candidate.
+			const raw = Math.min(1, Math.abs(pull));
+			const p = 0.4 * raw + 0.6 * raw * raw * (3 - 2 * raw);
+			left += (b.offsetLeft - left) * p;
+			width += (b.offsetWidth - width) * p;
+		}
+	}
+	const moving = animate && !reducedMotion.matches;
+	if (!moving) { composerIndicator.style.transition = 'none'; }
+	composerIndicator.style.width = `${width}px`;
+	composerIndicator.style.transform = `translateX(${left}px)`;
+	if (!moving) {
+		// Commit the resting position before the transition is enabled again, or the next move animates from the old one.
+		void composerIndicator.offsetWidth;
+		composerIndicator.style.transition = '';
+	}
+}
+// Animated on purpose: the active tab turns bold, which resizes both buttons right after a switch,
+// and a snapping repaint here cancelled the slide that setComposerTab had just started.
+const composerIndicatorSize = new ResizeObserver(() => paintIndicator(true));
+composerIndicatorSize.observe(composerTabs);
+for (const b of Object.values(composerTabButtons)) { composerIndicatorSize.observe(b); }
+
 function setComposerPull(pull: number): void {
-	composerTabs.style.setProperty('--swipe-pull', reducedMotion.matches ? '0' : pull.toFixed(3));
+	if (!pull) { return; }
+	// A short transition rather than an instant paint, so the magnet reads as a soft pull.
+	composerIndicator.style.transitionDuration = '.12s';
+	paintIndicator(true, reducedMotion.matches ? 0 : pull);
 	clearTimeout(composerPullReset);
-	if (pull) { composerPullReset = setTimeout(() => composerTabs.style.setProperty('--swipe-pull', '0'), swipeGapMs + 40); }
+	composerPullReset = setTimeout(() => paintIndicator(true), holdMs + 40);
+}
+
+/** Highlights the tab a pull would land on (and only while the underline is past the halfway point). */
+function markPullTarget(pull: number): void {
+	let target: ComposerTab | undefined;
+	if (pull && Math.abs(pull) >= 0.5) {
+		const names = visibleComposerTabNames();
+		target = names[names.indexOf(composerTab) + (pull > 0 ? 1 : -1)];
+	}
+	for (const [name, b] of Object.entries(composerTabButtons)) { b.classList.toggle('pull-target', name === target); }
 }
 
 /** Moves to the visible tab `step` places along; false when there is none that way. */
 function composerSwipeStep(step: -1 | 1): boolean {
-	const order = [...composerTabs.children].filter((b): b is HTMLButtonElement => b instanceof HTMLButtonElement && b.classList.contains('composer-tab') && !b.hidden);
-	const names = order.map(b => (Object.keys(composerTabButtons) as ComposerTab[]).find(k => composerTabButtons[k] === b)!);
+	const names = visibleComposerTabNames();
 	const next = names[names.indexOf(composerTab) + step];
 	if (!next) { return false; }
 	setComposerTab(next);
@@ -917,9 +1007,35 @@ function pinThreadToEnd(ms: number): void {
 	};
 	step();
 }
+/**
+ * After a send the thread follows its end whatever it was showing (asked for: even a very long
+ * message must not leave the reader at its top while the thinking and the reply start below).
+ * The prompt arrives with a state post a moment after the send, and the rows under it later
+ * still, so for `sentFollowMs` every render of that chat sticks to the end and re-pins while
+ * the layout settles. A wheel, press or touch on the thread ends it.
+ */
+const sentFollowMs = 4000;
+let sentFollow: { chatId: string; until: number } | undefined;
+function followAfterSend(chatId: string | undefined): void {
+	if (!chatId) { return; }
+	sentFollow = { chatId, until: performance.now() + sentFollowMs };
+	threadFollowsEnd = true;
+	pinThreadToEnd(300);
+}
+function followingSend(chatId: string): boolean {
+	if (!sentFollow) { return false; }
+	if (sentFollow.chatId !== chatId || performance.now() > sentFollow.until) {
+		sentFollow = undefined;
+		return false;
+	}
+	return true;
+}
 for (const ev of ['wheel', 'pointerdown', 'touchstart'] as const) {
 	// The user scrolling during the animation takes the thread back.
-	thread.addEventListener(ev, () => { if (threadPinFrame !== undefined) { cancelAnimationFrame(threadPinFrame); threadPinFrame = undefined; } }, { passive: true });
+	thread.addEventListener(ev, () => {
+		sentFollow = undefined;
+		if (threadPinFrame !== undefined) { cancelAnimationFrame(threadPinFrame); threadPinFrame = undefined; }
+	}, { passive: true });
 }
 
 function setComposerTab(tab: ComposerTab, save = true): void {
@@ -928,11 +1044,13 @@ function setComposerTab(tab: ComposerTab, save = true): void {
 	// Capture the displayed height before cancelling: a rapid switch continues where it is now.
 	const fromHeight = animate ? composer.getBoundingClientRect().height : 0;
 	stopComposerHeightAnimation();
+	const enteringGithub = tab === 'github' && composerTab !== 'github';
 	composerTab = tab;
 	for (const [name, b] of Object.entries(composerTabButtons) as [ComposerTab, HTMLButtonElement][]) {
 		b.classList.toggle('active', name === tab);
 		b.setAttribute('aria-selected', String(name === tab));
 	}
+	paintIndicator(save);
 	composer.classList.toggle('skills-mode', tab === 'skills');
 	renderComposerMaximize();
 	composer.classList.toggle('list-mode', tab === 'activity' || tab === 'history' || tab === 'bash' || tab === 'github' || tab === 'files');
@@ -943,7 +1061,9 @@ function setComposerTab(tab: ComposerTab, save = true): void {
 	filesPanel.hidden = tab !== 'files';
 	syncProcessWatch();
 	if (tab === 'bash') { renderComposerBash(); }
-	if (tab === 'github') { requestGithub(); }
+	// Coming to the GitHub tab from another composer tab always asks again (asked
+	// for), past the view's 30 s copy; a request in flight is asked again after it.
+	if (enteringGithub) { refreshGithubIfOpen(); } else if (tab === 'github') { requestGithub(); }
 	if (tab === 'files') { openFilesTab(); }
 	if (tab === 'activity' && state) { renderComposerAgents(state); renderComposerAccess(state); }
 	if (tab === 'history') {
@@ -973,10 +1093,16 @@ for (const [name, b] of Object.entries(composerTabButtons) as [ComposerTab, HTML
 	b.addEventListener('click', () => setComposerTab(name));
 }
 /** Alt+C / S / A / H switch the composer tabs; `code`, since Option+letter types a symbol on a Mac. */
-const composerTabKeys: Record<string, ComposerTab> = { KeyC: 'chat', KeyS: 'skills', KeyA: 'activity', KeyH: 'history', KeyO: 'history', KeyB: 'bash', KeyG: 'github', KeyF: 'files' };
+const composerTabKeys: Record<string, ComposerTab> = { KeyC: 'chat', KeyS: 'skills', KeyA: 'activity', KeyP: 'history', KeyH: 'history', KeyO: 'history', KeyB: 'bash', KeyG: 'github', KeyF: 'files' };
+/**
+ * Where a key belongs to the shell, not the chat: the stage holds xterm's hosts and, on a touch device, the key bar's
+ * proxy textarea (`terminalKeyBar.ts` appends it to the stage, beside the hosts), plus the key bar itself. Not the whole
+ * `.terminal-main`, which also holds the docked conversation, where these keys are the chat's.
+ */
+const terminalInputSurface = '.terminal-stage, .terminal-keybar';
 document.addEventListener('keydown', e => {
 	if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing) { return; }
-	if (e.code === 'KeyW' && !(e.target as Element | null)?.closest?.('.terminal-main')) {
+	if (e.code === 'KeyW' && !(e.target as Element | null)?.closest?.(terminalInputSurface)) {
 		// Option+W closes the chat tab in front, as Cmd+W does through the contributed keybinding.
 		e.preventDefault();
 		e.stopPropagation();
@@ -984,7 +1110,7 @@ document.addEventListener('keydown', e => {
 		return;
 	}
 	const tab = composerTabKeys[e.code];
-	if (!tab || composerTabs.hidden || !composerTabShown(tab) || (e.target as Element | null)?.closest?.('.terminal-main')) { return; }
+	if (!tab || composerTabs.hidden || !composerTabShown(tab) || (e.target as Element | null)?.closest?.(terminalInputSurface)) { return; }
 	e.preventDefault();
 	e.stopPropagation();
 	setComposerTab(tab);
@@ -1110,7 +1236,7 @@ function renderComposerAccess(s: ChatViewState): void {
 	}
 }
 /**
- * The Conversation and Bash tabs show their newest rows only: `composerListStep` at first, and
+ * The Prompts and Bash tabs show their newest rows only: `composerListStep` at first, and
  * "Show more" at the foot adds another step. Nothing is dropped from the state; the cap bounds
  * what the list builds in the DOM. Reset when another chat is shown.
  */
@@ -1419,8 +1545,24 @@ function focusKeyIn(node: HTMLElement): string | undefined {
 	return node.classList.contains('cl-answer') ? `.cl-row-pair:has([${attr}]) .cl-answer${node.classList.contains('cl-more') ? '.cl-more' : ':not(.cl-more)'}` : `[${attr}]`;
 }
 composerBashList.addEventListener('pointerdown', () => { bashPressed = true; });
+composerGithubList.addEventListener('pointerdown', () => { githubPressed = true; }, true);
+for (const end of ['pointerup', 'pointercancel'] as const) {
+	window.addEventListener(end, () => {
+		if (!githubPressed) { return; }
+		githubPressed = false;
+		// After the click that follows the release, so the click lands on the row it was pressed on.
+		if (githubStale) { githubStale = false; setTimeout(renderComposerGithub, 0); }
+	}, true);
+}
 window.addEventListener('pointerup', () => { if (!bashPressed) { return; } bashPressed = false; if (bashStale) { bashStale = false; setTimeout(renderComposerBash, 0); } }, true);
 window.addEventListener('pointercancel', () => { if (bashPressed) { bashPressed = false; if (bashStale) { bashStale = false; renderComposerBash(); } } }, true);
+/** A press whose release never reaches the view (the window loses focus or is hidden mid-press) must not hold the lists for good. */
+function releaseListPresses(): void {
+	if (bashPressed) { bashPressed = false; if (bashStale) { bashStale = false; renderComposerBash(); } }
+	if (githubPressed) { githubPressed = false; if (githubStale) { githubStale = false; renderComposerGithub(); } }
+}
+window.addEventListener('blur', releaseListPresses);
+document.addEventListener('visibilitychange', () => { if (document.hidden) { releaseListPresses(); } });
 /**
  * The GitHub tab: open pull requests and recent Actions runs of the repository
  * the working folder belongs to, asked of the host each time the tab opens or
@@ -1430,10 +1572,69 @@ let githubAnswer: Extract<HostToView, { type: 'githubStatus' }> | undefined;
 let githubPending = false;
 let githubAt = 0;
 let composerGithubShape = '';
+/** Actions runs whose bell is on (`runWatchKey`), as the host last said: it polls them and says when one ends. */
+let githubWatched = new Set<string>();
+/** The run whose bell was just rung here, so it plays its ring once rather than on every rebuild. */
+let githubBellRang = '';
+/** A press inside the GitHub list holds its rebuild until release (#365): a refresh landing mid-click lost it. */
+let githubPressed = false;
+let githubStale = false;
+/**
+ * The branch as the GitHub tab sees it: name and upstream (published or not,
+ * how far ahead). A change — a publish, a push, a commit — can make "Create
+ * pull request" appear, so the tab, when it is the one open, is asked again.
+ */
+let githubBranchShape = '';
+/** A refresh asked for while a request was in flight: its answer may predate the change. */
+let githubAgain = false;
+/**
+ * Automatic refreshes (focus coming back, a composer tab switch, a branch
+ * change) are at most one per `githubThrottleMs` (asked for: 2–3 s). One asked
+ * for inside that window is not dropped but runs when it ends. The Refresh
+ * button and Sign in are never held back.
+ */
+const githubThrottleMs = 3_000;
+let githubAskedAt = 0;
+let githubThrottleTimer: ReturnType<typeof setTimeout> | undefined;
+function refreshGithubIfOpen(): void {
+	if (composerTab !== 'github') { return; }
+	if (githubPending) { githubAgain = true; return; }
+	const wait = githubAskedAt + githubThrottleMs - Date.now();
+	if (wait > 0) {
+		githubThrottleTimer ??= setTimeout(() => { githubThrottleTimer = undefined; refreshGithubIfOpen(); }, wait);
+		return;
+	}
+	requestGithub(true);
+}
+/**
+ * The GitHub tab keeps itself current while it is open (asked for): when the
+ * window or the view comes back into focus — a pull request looked at in the
+ * browser, another window — and at least once a minute otherwise. Only while
+ * the tab is open and on screen, so a hidden tab spends no API requests.
+ */
+const githubAutoMs = 60_000;
+let githubWindowFocused: boolean | undefined;
+function githubOnReturn(): void {
+	if (document.hidden) { return; }
+	refreshGithubIfOpen();
+}
+window.addEventListener('focus', githubOnReturn);
+document.addEventListener('visibilitychange', githubOnReturn);
+/** VS Code's own window focus, from the state: the webview's `focus` fires only when the view itself is clicked. */
+function githubNoteWindowFocus(focused: boolean | undefined): void {
+	const before = githubWindowFocused;
+	githubWindowFocused = focused;
+	if (before === false && focused === true) { githubOnReturn(); }
+}
+setInterval(() => {
+	if (composerTab !== 'github' || document.hidden || githubPending) { return; }
+	if (Date.now() - githubAt >= githubAutoMs) { requestGithub(true); }
+}, 5_000);
 function requestGithub(force = false, signIn = false): void {
 	if (!gitFolder || (githubPending && !signIn)) { renderComposerGithub(); return; }
 	if (!force && !signIn && githubAnswer && Date.now() - githubAt < 30_000) { renderComposerGithub(); return; }
 	githubPending = true;
+	githubAskedAt = Date.now();
 	post({ type: 'githubStatus', folder: gitFolder, ...(signIn ? { signIn } : {}) });
 	renderComposerGithub();
 }
@@ -1443,23 +1644,42 @@ function requestGithub(force = false, signIn = false): void {
  * title is never replaced (#365).
  */
 let githubPrOpen = false;
+/** The folder whose Create PR (Branches window) led here: its next fresh answer opens the form. */
+let githubPrWanted: string | undefined;
 /** Folders whose pull request is being opened: per folder, so switching folders mid-create neither drops the answer nor locks the form. */
 const githubPrCreatingIn = new Set<string>();
 const githubPrCreatingHere = (): boolean => !!gitFolder && githubPrCreatingIn.has(gitFolder);
 let githubPrError = '';
-let githubPrCreated: { number: number; url: string } | undefined;
+/** The pull request just opened from the tab, with the folder and branch it was opened from and when:
+ * it is shown only for that folder and branch, and only until the list carries it or a couple of
+ * minutes pass. A window-wide value outlived its pull request: merged or closed, it never reached the
+ * open list, so "Pull request #N opened" stayed up for good, in every folder, beside the Create offer. */
+let githubPrCreated: { number: number; url: string; folder: string; branch: string | undefined; at: number } | undefined;
+const githubPrCreatedMs = 120_000;
+/** The created pull request whose row has already glowed, so a rebuild does not replay it. */
+let githubPrGlowed: number | undefined;
 const githubPrTitle = el('input', { class: 'gh-pr-title' }) as HTMLInputElement;
 githubPrTitle.type = 'text';
 githubPrTitle.placeholder = 'Pull request title';
 githubPrTitle.maxLength = 256;
 const githubPrDraft = el('input') as HTMLInputElement;
 githubPrDraft.type = 'checkbox';
-const githubPrSubmit = button(['Create'], { class: 'cl-link gh-pr-submit' });
-const githubPrCancel = button(['Cancel'], { class: 'cl-link' });
+const githubPrSubmit = button(['Create'], { class: 'cl-action primary gh-pr-submit' });
+const githubPrCancel = button(['Cancel'], { class: 'cl-action gh-pr-cancel' });
 const githubPrNote = el('div', { class: 'gh-pr-note' });
-const githubPrForm = el('div', { class: 'gh-pr-form' }, githubPrTitle,
-	el('div', { class: 'gh-pr-actions' }, el('label', { class: 'gh-pr-draft' }, githubPrDraft, el('span', { text: 'Draft' })), el('span', { class: 'cl-spacer' }), githubPrCancel, githubPrSubmit),
-	githubPrNote);
+/** The head → base pair of the form, refilled on each render. */
+const githubPrFlow = el('span', { class: 'gh-pr-flow' });
+function setGithubPrFlow(head: string, base: string | undefined): void {
+	githubPrFlow.replaceChildren(
+		el('span', { class: 'gh-branch', text: head, title: head }),
+		icon('arrow-right', 'gh-pr-flow-arrow'),
+		el('span', { class: 'gh-branch base', text: base ?? '?', title: base ?? '' }));
+}
+const githubPrForm = el('div', { class: 'gh-pr-form' },
+	el('div', { class: 'gh-pr-head' }, el('span', { class: 'gh-pr-head-icon' }, icon('git-pull-request-create')), el('span', { class: 'gh-pr-head-title', text: 'New pull request' }), githubPrFlow),
+	githubPrTitle,
+	githubPrNote,
+	el('div', { class: 'gh-pr-actions' }, el('label', { class: 'gh-pr-draft' }, githubPrDraft, el('span', { text: 'Draft' })), el('span', { class: 'cl-spacer' }), githubPrCancel, githubPrSubmit));
 function submitGithubPr(): void {
 	const title = githubPrTitle.value.trim();
 	if (!gitFolder || githubPrCreatingHere()) { return; }
@@ -1478,42 +1698,112 @@ githubPrTitle.addEventListener('keydown', event => {
 	else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); githubPrCancel.click(); }
 });
 const githubSourceName: Record<string, string> = { gh: 'gh CLI', vscode: 'VS Code GitHub sign-in', public: 'public API' };
-const runIcon: Record<string, string> = { success: 'pass-filled', failure: 'error', running: 'sync', queued: 'clock', cancelled: 'circle-slash', skipped: 'debug-step-over', other: 'circle-outline' };
+const runIcon: Record<string, string> = { success: 'pass-filled', failure: 'error', running: 'loading', queued: 'clock', cancelled: 'circle-slash', skipped: 'debug-step-over', other: 'circle-outline' };
+/**
+ * Rebuilds the GitHub list, and gives the focus back to what had it: the list is redrawn on
+ * every poll of a watched run and every refresh, and a focused element taken out of the page
+ * drops the focus to the body — the pull request title being typed lost its caret (#365).
+ */
 function renderComposerGithub(): void {
+	const active = document.activeElement instanceof HTMLElement && composerGithubList.contains(document.activeElement) ? document.activeElement : undefined;
+	const field = active instanceof HTMLInputElement ? { start: active.selectionStart, end: active.selectionEnd } : undefined;
+	const bellKey = active?.dataset.key;
+	renderComposerGithubList();
+	if (!active || document.activeElement === active) { return; }
+	const target = active.isConnected ? active
+		: bellKey ? [...composerGithubList.querySelectorAll<HTMLElement>('[data-key]')].find(node => node.dataset.key === bellKey) : undefined;
+	if (!target) { return; }
+	target.focus({ preventScroll: true });
+	if (field && target instanceof HTMLInputElement && field.start !== null) { target.setSelectionRange(field.start, field.end ?? field.start); }
+}
+function renderComposerGithubList(): void {
 	if (composerTab !== 'github') { return; }
-	const shape = JSON.stringify([gitFolder ?? '', githubPending, githubAnswer ?? null, githubPrOpen, githubPrCreatingHere(), githubPrError, githubPrCreated ?? null]);
+	const shape = JSON.stringify([gitFolder ?? '', githubPending, githubAnswer ?? null, githubPrOpen, githubPrCreatingHere(), githubPrError, githubPrCreated ?? null, [...githubWatched]]);
 	if (shape === composerGithubShape) { return; }
+	if (githubPressed) { githubStale = true; return; }
 	composerGithubShape = shape;
 	composerGithubList.replaceChildren();
-	const refresh = clLink(githubPending ? 'Loading…' : 'Refresh', () => requestGithub(true));
+	// VS Code's own refresh: an icon button whose glyph becomes the spinning `loading` codicon
+	// while a request runs (asked for), in a box of the same size so nothing moves.
+	const refresh = button([githubPending ? codiconSpinner() : icon('refresh')],
+		{ class: 'ghost gh-refresh', title: githubPending ? 'Refreshing…' : 'Refresh' });
+	refresh.setAttribute('aria-label', githubPending ? 'Refreshing' : 'Refresh');
+	refresh.setAttribute('aria-busy', String(githubPending));
+	refresh.addEventListener('click', () => requestGithub(true));
 	refresh.disabled = githubPending;
 	const status = githubAnswer?.status;
-	composerGithubList.append(clHead(status ? status.repo : 'GitHub', undefined, status ? `Read with the ${githubSourceName[status.source]}` : undefined, refresh));
+	const head = clHead(status ? status.repo : 'GitHub', undefined, status ? `Read with the ${githubSourceName[status.source]}` : undefined, refresh);
+	// The repository's name opens its root on GitHub, in the system browser (asked for), and so
+	// does the external-link icon after it. The slug is checked, since it reaches a URL.
+	if (status && /^[\w.-]+\/[\w.-]+$/.test(status.repo)) {
+		const url = `https://github.com/${status.repo}`;
+		const repoLink = button([el('span', { class: 'cl-head-title', text: status.repo }), icon('link-external')], { class: 'gh-repo-link', title: `Open ${url}` });
+		repoLink.addEventListener('click', () => post({ type: 'openLink', url, external: true }));
+		head.querySelector('.cl-head-title')?.replaceWith(repoLink);
+	}
+	composerGithubList.append(head);
 	if (!gitFolder) { composerGithubList.append(clEmpty('folder', 'This chat has no working folder.')); return; }
-	if (!githubAnswer) { composerGithubList.append(clEmpty('loading', 'Loading pull requests and runs…')); return; }
+	if (!githubAnswer) {
+		composerGithubList.append(el('div', { class: 'cl-empty', title: 'Loading pull requests and runs' }, codiconSpinner('cl-empty-icon')));
+		return;
+	}
 	const signIn = () => { const b = clLink('Sign in to GitHub', () => requestGithub(true, true)); return b; };
 	if (!status) {
+		if (!githubPending) { githubPrWanted = undefined; }
 		composerGithubList.append(clEmpty('github', githubAnswer.error ?? 'Nothing to show.'));
 		if (githubAnswer.signIn) { composerGithubList.append(el('div', { class: 'cl-empty' }, signIn())); }
 		return;
 	}
 	const chip = (text: string, cls: string) => el('span', { class: `cl-chip ${cls}`, text });
 	const open = (url: string) => () => post({ type: 'openLink', url, external: true });
-	composerGithubList.append(clHead('Pull requests', status.prs.length, 'Open pull requests, newest update first'));
-	if (githubPrCreated) {
-		const done = button(clRow(el('span', { class: 'cl-lead cl-icon gh-pr' }, icon('pass-filled')), `Pull request #${githubPrCreated.number} opened`, [el('span', { text: 'Open on GitHub' })], icon('link-external', 'cl-chevron')), { class: 'cl-row current', title: githubPrCreated.url });
-		done.addEventListener('click', open(githubPrCreated.url));
-		composerGithubList.append(done);
+	// Arrived from the Branches window's Create PR, and the fresh answer is in: open the form
+	// filled in, so one click on Create is left; a pull request that exists is brought into view.
+	let focusAfter: HTMLElement | undefined;
+	const wanted = !githubPending && githubPrWanted !== undefined && githubPrWanted === gitFolder;
+	if (wanted) {
+		githubPrWanted = undefined;
+		if (canOfferPullRequest(status) && status.branch && status.published !== false && !githubPrCreatingHere()) {
+			githubPrOpen = true;
+			githubPrError = '';
+			if (!githubPrTitle.value) { githubPrTitle.value = status.suggestedTitle ?? status.branch ?? ''; }
+			focusAfter = githubPrSubmit;
+		}
 	}
-	if (canOfferPullRequest(status) && status.branch) {
+	composerGithubList.append(clHead('Pull requests', status.prs.length, 'Open pull requests, newest update first'));
+	// A pull request just opened is not a row of its own (asked for: it read as one more pull
+	// request). Once the list carries it, its row gets a "just opened" chip; until then, a small
+	// log line under the heading says so, with a link.
+	const stale = githubPrCreated;
+	if (stale && (stale.folder !== gitFolder || stale.branch !== status.branch
+		|| (!githubPending && Date.now() - stale.at > githubPrCreatedMs && !status.prs.some(pr => pr.number === stale.number)))) {
+		githubPrCreated = undefined;
+	}
+	const created = githubPrCreated;
+	const createdListed = !!created && status.prs.some(pr => pr.number === created.number);
+	if (created && !createdListed) {
+		const link = button(['View', icon('link-external')], { class: 'gh-log-link', title: created.url });
+		link.addEventListener('click', open(created.url));
+		const log = el('div', { class: 'gh-log' },
+			el('span', { class: 'gh-log-icon' }, icon('check')),
+			el('span', { class: 'gh-log-text' }, 'Pull request ', el('strong', { text: `#${created.number}` }), ' opened'),
+			link);
+		log.setAttribute('role', 'status');
+		composerGithubList.append(log);
+	}
+	if (canOfferPullRequest(status) && status.branch && !(created && !createdListed)) {
 		if (!githubPrOpen) {
 			const unpublished = status.published === false;
-			const meta: Child[] = [el('span', { text: `${status.branch} → ${status.defaultBranch}` })];
+			const meta: Child[] = [el('span', { class: 'gh-branch', text: status.branch }), icon('arrow-right', 'gh-pr-flow-arrow'), el('span', { class: 'gh-branch base', text: status.defaultBranch ?? '?' })];
 			if (unpublished) { meta.push(chip('not published', 'other')); }
 			const offer = button(clRow(el('span', { class: 'cl-lead cl-icon gh-pr' }, icon('git-pull-request-create')), 'Create pull request', meta, icon('add', 'cl-chevron')),
-				{ class: 'cl-row gh-pr-offer', title: unpublished ? `Publish ${status.branch} in the Branches window first.` : `Open a pull request from ${status.branch} into ${status.defaultBranch}` });
-			offer.disabled = unpublished;
+				{ class: 'cl-row gh-pr-offer', title: unpublished ? `Publish ${status.branch} first: opens the Branches window` : `Open a pull request from ${status.branch} into ${status.defaultBranch}` });
+			// Not disabled when unpublished: a dead row with no way forward was reported. A click
+			// opens the Branches window, where Publish is; the push refreshes this tab.
 			offer.addEventListener('click', () => {
+				if (unpublished) {
+					if (!branchPopup.classList.contains('open')) { branchButton.click(); }
+					return;
+				}
 				githubPrOpen = true;
 				githubPrError = '';
 				if (!githubPrTitle.value) { githubPrTitle.value = status.suggestedTitle ?? status.branch ?? ''; }
@@ -1524,9 +1814,14 @@ function renderComposerGithub(): void {
 			});
 			composerGithubList.append(offer);
 		} else {
-			githubPrNote.textContent = githubPrError || `${status.branch} → ${status.defaultBranch}`;
+			setGithubPrFlow(status.headBranch ?? status.branch, status.defaultBranch);
+			githubPrNote.textContent = githubPrError;
+			githubPrNote.hidden = !githubPrError;
 			githubPrNote.classList.toggle('error', !!githubPrError);
-			githubPrSubmit.textContent = githubPrCreatingHere() ? 'Creating…' : 'Create';
+			githubPrForm.classList.toggle('busy', githubPrCreatingHere());
+			// VS Code's own spinner beside "Creating…", so the wait reads as a request on its way.
+			githubPrSubmit.replaceChildren(...(githubPrCreatingHere() ? [codiconSpinner(), 'Creating…'] : ['Create']));
+			githubPrSubmit.setAttribute('aria-busy', String(githubPrCreatingHere()));
 			githubPrSubmit.disabled = githubPrCreatingHere();
 			githubPrTitle.disabled = githubPrCreatingHere();
 			composerGithubList.append(githubPrForm);
@@ -1537,25 +1832,89 @@ function renderComposerGithub(): void {
 		const meta: Child[] = [el('span', { text: `#${pr.number}` }), el('span', { class: 'cl-sep', text: '·' }), el('span', { text: pr.author })];
 		if (pr.updatedAt) { meta.push(el('span', { class: 'cl-sep', text: '·' }), el('span', { text: ago(Date.parse(pr.updatedAt)) })); }
 		if (pr.current) { meta.push(chip('this branch', 'mine')); }
+		if (created?.number === pr.number) { meta.push(el('span', { class: 'cl-chip new' }, icon('sparkle'), 'just opened')); }
 		if (pr.draft) { meta.push(chip('draft', 'plain')); }
 		if (pr.review === 'APPROVED') { meta.push(chip('approved', 'mine')); } else if (pr.review === 'CHANGES_REQUESTED') { meta.push(chip('changes requested', 'other')); }
-		if (pr.checks) { meta.push(chip(pr.checks.failed ? `${pr.checks.failed} failing` : pr.checks.pending ? `${pr.checks.pending} running` : `${pr.checks.passed} passed`, pr.checks.failed ? 'other' : pr.checks.pending ? 'plain' : 'mine')); }
+		if (pr.checks) {
+			const [text, cls, mark] = pr.checks.failed ? [`${pr.checks.failed} failing`, 'bad', 'error'] : pr.checks.pending ? [`${pr.checks.pending} running`, 'plain', 'loading'] : [`${pr.checks.passed} passed`, 'mine', 'check'];
+			meta.push(el('span', { class: `cl-chip ${cls}` }, mark === 'loading' ? codiconSpinner() : icon(mark), text));
+		}
 		const lead = el('span', { class: `cl-lead cl-icon gh-pr ${pr.draft ? 'draft' : ''}` }, icon(pr.draft ? 'git-pull-request-draft' : 'git-pull-request'));
-		const row = button(clRow(lead, pr.title, meta, icon('link-external', 'cl-chevron')), { class: `cl-row${pr.current ? ' current' : ''}`, title: `${pr.title}\n${pr.branch}\n${pr.url}` });
+		// A pull request just opened glows once, the first time the list carries it.
+		const fresh = created?.number === pr.number && githubPrGlowed !== pr.number;
+		if (fresh) { githubPrGlowed = pr.number; }
+		const row = button(clRow(lead, pr.title, meta, icon('link-external', 'cl-chevron')), { class: `cl-row gh-pr-row${pr.current ? ' current' : ''}${created?.number === pr.number ? ' just-opened' : ''}${fresh ? ' glow' : ''}`, title: `${pr.title}\n${pr.branch}\n${pr.url}` });
 		row.addEventListener('click', open(pr.url));
 		composerGithubList.append(row);
+		if (wanted && pr.current && !focusAfter) { focusAfter = row; }
+	}
+	if (focusAfter) {
+		const target = focusAfter;
+		requestAnimationFrame(() => { target.scrollIntoView({ block: 'nearest' }); target.focus(); });
 	}
 	composerGithubList.append(clHead('Actions', status.runs.length, 'Recent workflow runs'));
 	if (status.runsError) { composerGithubList.append(clEmpty('warning', status.runsError)); }
 	else if (!status.runs.length) { composerGithubList.append(clEmpty('play-circle', 'No workflow runs.')); }
 	for (const run of status.runs) {
-		const meta: Child[] = [el('span', { text: run.name }), el('span', { class: 'cl-sep', text: '·' }), el('span', { text: run.branch }), el('span', { class: 'cl-sep', text: '·' }), el('span', { text: run.event })];
+		const meta: Child[] = [el('span', { text: run.name })];
+		meta.push(el('span', { class: 'cl-sep', text: '·' }), el('span', { text: run.branch }), el('span', { class: 'cl-sep', text: '·' }), el('span', { text: run.event }));
 		if (run.updatedAt) { meta.push(el('span', { class: 'cl-sep', text: '·' }), el('span', { text: ago(Date.parse(run.updatedAt)) })); }
 		if (run.current) { meta.push(chip('this branch', 'mine')); }
-		const lead = el('span', { class: `cl-lead cl-icon gh-run ${run.state}` }, icon(runIcon[run.state] ?? 'circle-outline', run.state === 'running' ? 'codicon-modifier-spin' : undefined));
-		const row = button(clRow(lead, run.title || run.name, meta, icon('link-external', 'cl-chevron')), { class: `cl-row${run.current ? ' current' : ''}`, title: `${run.state} · ${run.url}` });
+		// The workflow file the run came from: a repository often has several workflows on
+		// one event, and the file is what tells them apart. A click opens it — from the
+		// folder's own checkout in VS Code, on GitHub at the run's commit elsewhere. Last in the
+		// line, after the time (asked for).
+		const workflowFile = run.workflowPath;
+		const workflowUrl = workflowFileUrl(status.repo, run);
+		if (workflowFile) {
+			const name = workflowFile.slice(workflowFile.lastIndexOf('/') + 1);
+			const local = gate('openWorkflowFile').s === 'on';
+			const link = el('span', { class: 'gh-workflow-file', title: `${workflowFile}\nClick to open${local ? '' : ' on GitHub'}` }, name);
+			if (local || workflowUrl) {
+				link.addEventListener('click', event => {
+					event.stopPropagation();
+					if (local && gitFolder) { post({ type: 'openWorkflowFile', folder: gitFolder, path: workflowFile }); }
+					else if (workflowUrl) { open(workflowUrl)(); }
+				});
+			}
+			meta.push(el('span', { class: 'cl-sep', text: '·' }), link);
+		}
+		const lead = el('span', { class: `cl-lead cl-icon gh-run ${run.state}` }, run.state === 'running' ? codiconSpinner() : icon(runIcon[run.state] ?? 'circle-outline'));
+		// The bell (asked for): on a run still to finish, shown on hover; rung, it stays shown and
+		// the host says when the run ends — the Actions sound here, and a system notification.
+		// It sits inside the row's hover, left of the open-in-browser icon: the row keeps a slot
+		// for it and the bell is laid over that slot, since a button cannot hold a button.
+		const key = runWatchKey(status.repo, run.id);
+		const watched = githubWatched.has(key);
+		const bellable = (runInFlight(run.state) || watched) && !!gitFolder && gate('githubWatchRun').s === 'on';
+		const trail = el('span', { class: 'gh-run-trail' }, ...(bellable ? [el('span', { class: 'gh-watch-slot' })] : []), icon('link-external', 'cl-chevron'));
+		const row = button(clRow(lead, run.title || run.name, meta, trail), { class: `cl-row${run.current ? ' current' : ''}`, title: `${run.state} · ${run.event}${workflowFile ? `\n${workflowFile}` : ''}\n${run.url}` });
 		row.addEventListener('click', open(run.url));
-		composerGithubList.append(row);
+		if (bellable && gitFolder) {
+			const folder = gitFolder;
+			const tip = watched ? 'Watching this run — a sound and a system notification when it ends. Click to stop.' : 'Notify me when this run ends';
+			const bell = button([icon(watched ? 'bell-dot' : 'bell')], { class: `gh-watch${watched ? ' on' : ''}${githubBellRang === key ? ' rang' : ''}` });
+			bell.dataset.tip = tip;
+			hoverTip.attach(bell);
+			bell.setAttribute('aria-label', tip);
+			bell.setAttribute('aria-pressed', String(watched));
+			// The press is taken whole by the bell: the row must neither open the run nor take focus.
+			bell.addEventListener('pointerdown', event => event.stopPropagation());
+			bell.addEventListener('click', event => {
+				event.preventDefault();
+				event.stopPropagation();
+				hoverTip.hide();
+				if (watched) { githubWatched.delete(key); githubBellRang = ''; } else { githubWatched.add(key); githubBellRang = key; setTimeout(() => { if (githubBellRang === key) { githubBellRang = ''; } }, 700); }
+				post({ type: 'githubWatchRun', folder, runId: run.id, watch: !watched });
+				composerGithubShape = '';
+				renderComposerGithub();
+				composerGithubList.querySelector<HTMLElement>(`.gh-watch[data-key="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
+			});
+			bell.dataset.key = key;
+			composerGithubList.append(el('div', { class: `gh-run-item${watched ? ' watched' : ''}` }, row, bell));
+		} else {
+			composerGithubList.append(row);
+		}
 	}
 	if (githubAnswer.signIn) { composerGithubList.append(el('div', { class: 'cl-empty' }, el('span', { text: 'Only public data is shown.' }), signIn())); }
 }
@@ -2408,10 +2767,13 @@ function renderGitChanges(): void {
 		// Below it, the same commit followed by a push — or a publish when the branch has no upstream.
 		gitPopupActions.append(action);
 		if (!pushLabel) { return; }
-		const andPush = button([icon('cloud-upload'), pushLabel], { class: 'git-changes-commit', title: commitReason || 'Commit, then push the branch (publishing it if it has no upstream yet)' });
+		gitPopupActions.append(pushAction(scope, pushLabel));
+	};
+	const pushAction = (scope: 'staged' | 'all', label: string) => {
+		const andPush = button([icon('cloud-upload'), label], { class: 'git-changes-commit', title: commitReason || 'Commit, then push the branch (publishing it if it has no upstream yet)' });
 		andPush.disabled = !!commitReason;
 		andPush.addEventListener('click', () => commitGitFiles(scope, true));
-		gitPopupActions.append(andPush);
+		return andPush;
 	};
 	if (staged && unstaged) {
 		note('What would you like to commit?');
@@ -2431,6 +2793,8 @@ function renderGitChanges(): void {
 		choose.addEventListener('click', () => { closePopups(); modelPill.click(); });
 		gitPopupActions.append(choose);
 	}
+	// Commit staged & Push stands last in the window, below everything else (asked for).
+	if (staged) { gitPopupActions.append(pushAction('staged', `Commit staged (${staged}) & Push`)); }
 }
 function openGitChanges(pin: boolean): void {
 	if (!gitFolder) { return; }
@@ -2592,9 +2956,21 @@ function renderBranchSync(): void {
 		}
 		if (branchState.pullRequest) {
 			const url = branchState.pullRequest;
-			const pr = action('Pull request', 'git-pull-request', `Open the pull request page on GitHub — ${isMacView ? '⌘' : 'Ctrl'}-click for the system browser`, () => undefined);
+			// With `gh`, the GitHub tab: it shows this branch's pull request, or its Create form
+			// filled in and waiting for one click (asked for). Without it, GitHub's compare page
+			// in the system browser, always — it wants the user's own sign-in.
+			const inTab = !!branchState.gh && composerTabShown('github');
+			const pr = action('Create PR', 'git-pull-request', inTab
+				? 'Show this branch\'s pull request in the GitHub tab, or create it there'
+				: 'Open GitHub\'s page to create a pull request, in the system browser', () => {
+				if (!inTab) { post({ type: 'openLink', url, external: true }); return; }
+				closePopups();
+				githubPrWanted = gitFolder;
+				setComposerTab('github');
+				requestGithub(true);
+			});
 			pr.disabled = false;
-			pr.addEventListener('click', event => { post({ type: 'openLink', url, external: isMacView ? event.metaKey : event.ctrlKey }); });
+			if (!inTab) { pr.append(icon('link-external', 'git-branch-sync-external')); }
 		}
 	}
 	branchSync.append(el('div', { class: 'git-branch-sync-text', title: text }, text), actions);
@@ -2942,6 +3318,164 @@ function followDraft(s: ChatViewState): void {
 let terminalView: TerminalView | undefined;
 /** A `focusInput` that found a terminal in front: see its handler. */
 let composerFocusPending = false;
+/**
+ * The message box under a terminal: while a terminal pinned to the conversation in front is on screen, the
+ * conversation's own footer (message box, chips, skills, questions) is moved to the foot of the terminal's column
+ * instead of being hidden with the conversation, so the user writes to the agent that drives that terminal
+ * without leaving it. Nothing is built twice: it is the same node, the same draft and the same send.
+ * The host keeps `activeTab` on the pinning conversation while such a terminal is in front (`_syncTerminalOwner`).
+ */
+const terminalMessagesKey = 'aiBrowser.terminal.messages';
+let terminalMessages = (() => { try { return localStorage.getItem(terminalMessagesKey) === '1'; } catch { return false; } })();
+/** Height of the docked messages in px (per device); absent: 45% of the column. */
+const terminalChatHeightKey = 'aiBrowser.terminal.messagesHeight';
+let terminalChatHeight: number | undefined = (() => { try { const v = Number(localStorage.getItem(terminalChatHeightKey)); return v >= 80 ? v : undefined; } catch { return undefined; } })();
+const terminalChatResize = el('div', { class: 'terminal-chat-resize', title: 'Drag to resize · double-click to reset' });
+function applyTerminalChatHeight(): void {
+	const main = document.querySelector<HTMLElement>('.terminal-main');
+	if (!main || terminalChatHeight === undefined) { main?.style.removeProperty('--terminal-chat-h'); return; }
+	const max = Math.max(80, Math.floor(main.clientHeight * 0.7));
+	main.style.setProperty('--terminal-chat-h', `${Math.min(max, Math.max(80, terminalChatHeight))}px`);
+}
+terminalChatResize.addEventListener('pointerdown', down => {
+	const main = terminalChatResize.parentElement;
+	if (!main) { return; }
+	down.preventDefault();
+	terminalChatResize.setPointerCapture(down.pointerId);
+	terminalChatResize.classList.add('dragging');
+	const startY = down.clientY;
+	const startH = thread.getBoundingClientRect().height;
+	const move = (m: PointerEvent): void => {
+		terminalChatHeight = Math.round(startH + startY - m.clientY);
+		applyTerminalChatHeight();
+	};
+	// Also on a lost capture, which sends no pointerup: removed on the first, so it runs once.
+	const up = (): void => {
+		terminalChatResize.classList.remove('dragging');
+		terminalChatResize.removeEventListener('pointermove', move);
+		terminalChatResize.removeEventListener('pointerup', up);
+		terminalChatResize.removeEventListener('pointercancel', up);
+		terminalChatResize.removeEventListener('lostpointercapture', up);
+		try { if (terminalChatHeight !== undefined) { localStorage.setItem(terminalChatHeightKey, String(terminalChatHeight)); } } catch { /* this page only */ }
+		if (state) { renderThread(state); }
+	};
+	terminalChatResize.addEventListener('pointermove', move);
+	terminalChatResize.addEventListener('pointerup', up);
+	terminalChatResize.addEventListener('pointercancel', up);
+	terminalChatResize.addEventListener('lostpointercapture', up);
+});
+terminalChatResize.addEventListener('dblclick', () => {
+	terminalChatHeight = undefined;
+	try { localStorage.removeItem(terminalChatHeightKey); } catch { /* this page only */ }
+	applyTerminalChatHeight();
+	if (state) { renderThread(state); }
+});
+/** The toolbar's button (terminalToolbar.ts) asks for the toggle with this event. */
+document.addEventListener('terminal-messages-toggle', () => {
+	terminalMessages = !terminalMessages;
+	try { localStorage.setItem(terminalMessagesKey, terminalMessages ? '1' : '0'); } catch { /* this page only */ }
+	if (!state) { return; }
+	renderTerminalDock(state);
+	if (terminalMessages && app.classList.contains('terminal-front')) { renderThread(state); }
+});
+// Re-parenting a scroll container resets its scrollTop to 0, and the thread is shown in two places of
+// different height. So whether the reader was at the end is remembered from real scrolling only (not from
+// the reset the move causes), and a moved thread that was at the end is put back at the end.
+let dockFocusPending = false;
+let threadFollowsEnd = true;
+let threadMoving = false;
+thread.addEventListener('scroll', () => {
+	if (!threadMoving) { threadFollowsEnd = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 60; }
+}, { passive: true });
+/**
+ * A thread at its end stays at its end while what it shows grows (asked for: after a send the
+ * thinking and the reply kept arriving below the fold). `renderThread` only decides at a render,
+ * by the distance before it, and a single post could add more than its 60 px — a thinking block,
+ * a tool's output, a code block — or grow the rows without one (an image loading, the composer
+ * shrinking after a send). So any change to the thread, or to its size, re-pins the end once a
+ * frame while the reader is following it. Scrolling up — a wheel, a key, the scrollbar — clears
+ * `threadFollowsEnd` through the scroll event; a wheel up clears it at once, so a frame queued
+ * meanwhile cannot snap the thread back. Nothing moves while a pointer is held on the thread, so
+ * a selection or a click (#365) is not scrolled out from under it.
+ */
+let threadFollowFrame: number | undefined;
+let threadPressed = false;
+function followThreadEnd(): void {
+	if (threadFollowFrame !== undefined) { return; }
+	threadFollowFrame = requestAnimationFrame(() => {
+		threadFollowFrame = undefined;
+		if (!threadFollowsEnd || threadMoving || threadPressed || !thread.isConnected) { return; }
+		if (thread.scrollHeight - thread.scrollTop - thread.clientHeight > 1) { thread.scrollTop = thread.scrollHeight; }
+	});
+}
+new MutationObserver(followThreadEnd).observe(thread, { childList: true, subtree: true, characterData: true });
+new ResizeObserver(followThreadEnd).observe(thread);
+thread.addEventListener('load', followThreadEnd, { capture: true });
+thread.addEventListener('wheel', event => { if (event.deltaY < 0) { threadFollowsEnd = false; } }, { passive: true });
+thread.addEventListener('pointerdown', () => { threadPressed = true; }, { passive: true });
+for (const ev of ['pointerup', 'pointercancel'] as const) {
+	document.addEventListener(ev, () => { if (threadPressed) { threadPressed = false; followThreadEnd(); } }, { passive: true });
+}
+const threadScrollByPlace = new Map<string, { atEnd: boolean; top: number }>();
+function threadPlace(chatId: string, parent: HTMLElement): string { return `${chatId}|${parent === chatMain ? 'chat' : 'terminal'}`; }
+/**
+ * `chatId` is the conversation the thread is moved for. The position saved on the way out is the one the
+ * thread still shows (`renderedChat`); during a switch of conversation the two differ, and reading the new
+ * place under the old chat's key restored the old chat's position.
+ */
+function moveThread(parent: HTMLElement, before: Node | null, chatId: string): void {
+	if (thread.parentElement === parent && thread.nextSibling === before) { return; }
+	// Each placement remembers its own position: the heights differ, so one shared offset lands mid-thread.
+	if (thread.parentElement instanceof HTMLElement) {
+		threadScrollByPlace.set(threadPlace(renderedChat, thread.parentElement), { atEnd: threadFollowsEnd, top: thread.scrollTop });
+	}
+	const saved = threadScrollByPlace.get(threadPlace(chatId, parent));
+	threadFollowsEnd = saved ? saved.atEnd : true;
+	threadMoving = true;
+	parent.insertBefore(thread, before);
+	const apply = (): void => { thread.scrollTop = threadFollowsEnd || !saved ? thread.scrollHeight : saved.top; };
+	apply();
+	requestAnimationFrame(() => { apply(); threadMoving = false; });
+}
+function renderTerminalDock(s: ChatViewState): void {
+	const front = visibleTerminalFront(s);
+	const terminal = front ? s.terminals?.find(t => t.id === front) : undefined;
+	const docked = !!terminal?.pinnedBy && terminal.pinnedBy.tabId === s.activeTab;
+	const main = docked ? document.querySelector<HTMLElement>('.terminal-main') : null;
+	const target = main ?? chatMain;
+	const withMessages = !!main && terminalMessages;
+	app.classList.toggle('terminal-chat', !!main);
+	app.classList.toggle('terminal-chat-messages', withMessages);
+	if (footer.parentElement !== target) { target.append(footer); }
+	if (dockFocusPending && main) { dockFocusPending = false; requestAnimationFrame(() => input.focus()); }
+	// The conversation is the same node as in the chat column, moved just above the message box.
+	if (withMessages) {
+		if (thread.parentElement !== main) { moveThread(main!, footer, s.chatId); }
+		if (terminalChatResize.parentElement !== main) { main!.insertBefore(terminalChatResize, thread); }
+		applyTerminalChatHeight();
+	} else {
+		terminalChatResize.remove();
+		if (thread.parentElement !== chatMain) { moveThread(chatMain, blocked, s.chatId); }
+	}
+	// The toolbar's own button: only while this terminal is docked; its icon and words follow the state.
+	const button = document.querySelector<HTMLButtonElement>('.terminal-main .terminal-tool-messages');
+	if (button) {
+		const label = terminalMessages ? 'Hide messages' : 'Show messages';
+		if (button.hidden === docked) { button.hidden = !docked; }
+		// Keyed on the state, not the label: the toolbar creates the button already labelled
+		// "Show messages", so a label check skipped the first render's icon, tip and aria-pressed.
+		if (button.dataset.messagesState !== String(terminalMessages)) {
+			button.dataset.messagesState = String(terminalMessages);
+			button.setAttribute('aria-label', label);
+			button.dataset.tip = terminalMessages ? 'Hide the conversation above the message box' : 'Show the conversation above the message box';
+			button.title = '';
+			button.setAttribute('aria-pressed', String(terminalMessages));
+			const text = button.querySelector<HTMLElement>('.terminal-tool-label');
+			if (text) { text.textContent = label; }
+			(button.firstChild as HTMLElement).className = `codicon codicon-${terminalMessages ? 'eye-closed' : 'comment'}`;
+		}
+	}
+}
 let terminalLoading = false;
 const terminalBacklog: HostToView[] = [];
 function syncTerminals(s: ChatViewState): void {
@@ -2954,6 +3488,7 @@ function syncTerminals(s: ChatViewState): void {
 					// The toolbar's "Ask agent" and a URL printed in a terminal: the menus and the link rule live here.
 					askAgent: askAgentMenu,
 					insertMenu: terminalInsertMenu,
+					chatMenu: sendToChatMenu,
 					openBrowser: anchor => openMenu(anchor, browserMenuItems(), 'Browser'),
 					openLink: (url, external) => post({ type: 'openLink', url, external }),
 					// What the surface allows (the control table), and which surface this is.
@@ -2962,8 +3497,10 @@ function syncTerminals(s: ChatViewState): void {
 					canInput: () => gate('terminalInput').s === 'on',
 					// The website's Watch / Take control (its shim in serverChatHost.ts); absent in the editor.
 					lease: window.aiBrowserChatHost?.terminalLease,
+					// The toolbar's tooltips are drawn like the rest of the chat's, not the slow native ones.
+					tooltip: anchor => hoverTip.attach(anchor),
 				});
-				if (state) { terminalView.sync(state.terminals, visibleTerminalFront(state)); }
+				if (state) { terminalView.sync(state.terminals, visibleTerminalFront(state)); renderTerminalDock(state); }
 				for (const message of terminalBacklog.splice(0)) { terminalView.handle(message); }
 			}).catch(error => {
 				console.error('The terminal could not be loaded', error);
@@ -2981,6 +3518,9 @@ vscode.onMessage(message => {
 	switch (message.type) {
 		case 'agentProcesses':
 			if (state?.chatId === message.chatId) { state = { ...state, agentProcesses: message.snapshot }; renderComposerBash(); }
+			return;
+		case 'composerClipboard':
+			composerClipboardAnswer(message.hasText, message.text);
 			return;
 		case 'terminalData':
 		case 'terminalReplay':
@@ -3027,6 +3567,7 @@ vscode.onMessage(message => {
 		case 'state':
 			state = message.state.visualizationsUnchanged ? { ...message.state, visualizations: state?.visualizations } : message.state;
 			connectionPermissionRender?.();
+			githubNoteWindowFocus(state.windowFocused);
 			{ const shape = [...attachedFilePaths()].join('\n'); if (shape !== filesAttachedShape) { filesAttachedShape = shape; renderFiles(); } }
 			soundOnFinish(state);
 			renderSoundButton();
@@ -3134,6 +3675,7 @@ vscode.onMessage(message => {
    branchError.textContent = message.error ?? '';
    remoteConfirm = message.confirm ? { action: message.action, ...(message.action === 'publish' && publishRemoteChoice ? { remote: publishRemoteChoice } : {}), text: message.confirm, key: message.confirmKey ?? '' } : undefined;
    renderBranches();
+   if (!message.error && !remoteConfirm) { refreshGithubIfOpen(); }
    if (pushAfterCommit) {
     pushAfterCommit = false;
     if ((message.error || remoteConfirm) && !branchPopup.classList.contains('open')) {
@@ -3159,13 +3701,33 @@ vscode.onMessage(message => {
    if (message.folder !== gitFolder) { return; }
    if (message.createError !== undefined || message.created) {
     githubPrError = message.createError ?? '';
-    if (message.created) { githubPrCreated = message.created; githubPrOpen = false; githubPrTitle.value = ''; githubPrDraft.checked = false; }
+    if (message.created) { githubPrCreated = { number: message.created.number, url: message.created.url, folder: message.folder, branch: message.status?.branch ?? githubAnswer?.status?.branch, at: Date.now() }; githubPrOpen = false; githubPrTitle.value = ''; githubPrDraft.checked = false; }
     if (!message.status && !message.error) { composerGithubShape = ''; renderComposerGithub(); return; }
    }
    githubPending = false;
    githubAnswer = message;
    githubAt = Date.now();
    renderComposerGithub();
+   if (githubAgain) { githubAgain = false; refreshGithubIfOpen(); }
+   return;
+  }
+  case 'githubRunWatches': {
+   // Posted after every poll: only a changed set is worth a rebuild.
+   const runs = new Set(message.runs);
+   if (runs.size === githubWatched.size && [...runs].every(key => githubWatched.has(key))) { return; }
+   githubWatched = runs;
+   composerGithubShape = '';
+   renderComposerGithub();
+   return;
+  }
+  case 'githubRunEnded': {
+   githubWatched.delete(message.key);
+   const snd = effectiveSound();
+   const sound = snd?.githubRun ?? 'success';
+   if (snd && sound !== 'none') { playChatSound(sound, snd.volume, 1); }
+   composerGithubShape = '';
+   // A refresh already on its way may have read the run before it ended: ask again after it.
+   if (composerTab === 'github') { if (githubPending) { githubAgain = true; } else { requestGithub(true); } } else { githubAt = 0; }
    return;
   }
   case 'workdirGit': {
@@ -3183,6 +3745,12 @@ vscode.onMessage(message => {
    gitFetchError = message.fetchError ?? '';
    if (gitFetchError) { branchError.textContent = `Remote data may be outdated: ${gitFetchError}`; }
    branchState = message.branches;
+   {
+    const u = branchState?.upstream;
+    const shape = branchState ? JSON.stringify([branchState.current, u?.remote, u?.branch, u?.ahead, u?.gone, branchState.pullRequest]) : '';
+    if (githubBranchShape && shape !== githubBranchShape) { refreshGithubIfOpen(); }
+    githubBranchShape = shape;
+   }
    branchName.textContent = branchState ? branchState.current || 'Detached HEAD' : 'Git';
    const upstream = branchState?.current && !branchState.upstream?.gone ? branchState.upstream : undefined;
    const ahead = upstream?.ahead ?? 0, behind = upstream?.behind ?? 0;
@@ -3307,6 +3875,17 @@ vscode.onMessage(message => {
 			// Not while a tab is being renamed: the host asks for this on every tab
 			// selection, and a reply that arrives after the double-click closed
 			// the name field the moment it opened.
+			if (message.dock) {
+				// "Ask agent": the conversation docks under the terminal; its messages are shown and its box focused,
+				// once the state that docks it has arrived (`renderTerminalDock`).
+				if (!terminalMessages) {
+					terminalMessages = true;
+					try { localStorage.setItem(terminalMessagesKey, '1'); } catch { /* this page only */ }
+				}
+				dockFocusPending = true;
+				if (state) { renderTerminalDock(state); if (app.classList.contains('terminal-front')) { renderThread(state); } }
+				return;
+			}
 			if (!editingTab && !hasSelection()) {
 				// A terminal in front is where the keyboard goes: the box is hidden, and focusing it would fail.
 				// The host may have sent this before the state that takes the terminal away from the front:
@@ -3348,11 +3927,12 @@ function render(): void {
 	}
 	renderTabs(state);
 	syncTerminals(state);
+	renderTerminalDock(state);
 	renderSwitch(state);
 	renderQuestionDock(state);
 	// A conversation behind a terminal is not drawn: its column is hidden but keeps its
 	// geometry, and drawing it measures that to decide whether a reply is being followed.
-	if (!app.classList.contains('terminal-front')) {
+	if (!app.classList.contains('terminal-front') || app.classList.contains('terminal-chat-messages')) {
 		renderThread(state);
 		landFlight(state);
 		scheduleNewMessages();
@@ -3514,8 +4094,9 @@ function askAgentMenu(anchor: HTMLElement, terminalId: string, selection: string
 		terminal, agents: s.agents, defaultAgent: s.selection.agent, tabs: s.tabs,
 		frontTab: s.activeTab, tabLimit: s.tabLimit, hasSelection: !!text,
 	});
-	const withText = { ...(text ? { selection: text } : {}), ...(terminalWatchOnly ? { mode: 'watch' as const } : {}) };
-	openMenu(anchor, [...rows.map((row): MenuItem => {
+	// Watch only is set once the terminal is pinned, by the switch in its toolbar (or the pin chip's menu).
+	const withText = text ? { selection: text } : {};
+	const item = (row: AskRow): MenuItem => {
 		if (row.kind === 'tab') {
 			return { icon: row.icon, label: row.label, description: row.description, checked: row.checked, command: 'terminalAskAgent',
 				run: () => post({ type: 'terminalAskAgent', id: terminalId, target: { kind: 'tab', tabId: row.tabId }, ...withText }) };
@@ -3525,22 +4106,32 @@ function askAgentMenu(anchor: HTMLElement, terminalId: string, selection: string
 			icon: row.icon, label: row.label, description: row.description, disabled: row.disabled, command: 'terminalAskAgent.new',
 			run: () => { if (row.kind === 'new') { post({ type: 'terminalAskAgent', id: terminalId, target: { kind: 'new', agent: row.agent }, ...withText }); } },
 		};
-	}), watchOnlyToggle(() => askAgentMenu(anchor, terminalId, selection))], `Ask an agent about ${terminal.name}`);
+	};
+	// Grouped like the "+" and Insert menus: a heading per group, an empty group left out. On the website
+	// the new chats are hidden by the form rule, and their heading goes with them (the next group keeps its own).
+	openMenu(anchor, menuGroups([
+		{ heading: 'New chat with', items: rows.filter(row => row.kind !== 'tab').map(item) },
+		{ heading: 'Open chats', items: rows.filter(row => row.kind === 'tab').map(item) },
+	]), `Ask an agent about ${terminal.name}`);
 	focusMenu();
 }
 
 /**
- * "Watch only": the next pin from the "+" Terminal… menu or Ask agent is read-only — the agent reads the
- * screen ("look what I am doing") and its terminal_send / terminal_key are refused. A toggle row that
- * reopens the menu it is in; remembered for this page only.
+ * "Send to chat": which open conversation gets the terminal's text — asked, never assumed, since the
+ * one behind the terminal is often not the one the user means. The text was taken when the button was
+ * pressed; `send` carries it. The host checks the tab id again.
  */
-let terminalWatchOnly = false;
-function watchOnlyToggle(reopen: () => void): MenuItem {
-	return {
-		icon: 'eye', label: 'Watch only', checked: terminalWatchOnly, command: 'pinTerminal',
-		description: terminalWatchOnly ? 'The agent may read, not type' : 'Off: the agent may type (each input approved)',
-		run: () => { terminalWatchOnly = !terminalWatchOnly; setTimeout(reopen, 0); },
-	};
+function sendToChatMenu(anchor: HTMLElement, terminalId: string, send: (tabId: string) => void): void {
+	const s = state;
+	const terminal = s?.terminals?.find(t => t.id === terminalId);
+	if (!s || !terminal) { return; }
+	const rows = chatTargetRows({ terminal, agents: s.agents, tabs: s.tabs, frontTab: s.activeTab });
+	openMenu(anchor, menuGroups([{
+		heading: 'Open chats',
+		items: rows.map((row): MenuItem => ({ icon: row.icon, label: row.label, description: row.description, checked: row.checked,
+			command: 'terminalToChat', run: () => send(row.tabId) })),
+	}]), `Send ${terminal.name} to a chat`);
+	focusMenu();
 }
 
 /**
@@ -3551,15 +4142,21 @@ function watchOnlyToggle(reopen: () => void): MenuItem {
 function terminalInsertMenu(anchor: HTMLElement, terminalId: string): void {
 	const item = (icon: string, label: string, description: string, kind: Extract<ViewToHost, { type: 'terminalInsert' }>['kind']): MenuItem =>
 		({ icon, label, description, command: 'terminalInsert', run: () => post({ type: 'terminalInsert', id: terminalId, kind }) });
-	openMenu(anchor, [
-		item('link', 'Page address', 'The URL and title of the browser tab in front', 'page'),
-		item('inspect', 'Element…', 'Pick an element on the page; its context as text', 'element'),
-		item('device-camera', 'Screenshot', 'The visible page, saved; its path', 'screenshot'),
-		item('file', 'File…', 'One or more files; their paths', 'file'),
-		item('selection', 'Editor selection', 'The text selected in the editor', 'selection'),
-		item('device-camera-video', 'Video…', 'A recorded video; its path', 'video'),
-		item('comment', 'Annotations', 'The notes on the page in front', 'annotation'),
-	], 'Insert into the terminal (not sent)');
+	// The same groups and order as the "+" menu, so the two read as one list.
+	openMenu(anchor, menuGroups([
+		{ heading: 'Editor', items: [item('selection', 'Editor selection', 'The text selected in the editor', 'selection')] },
+		{ heading: 'Files', items: [
+			item('file', 'File…', 'One or more files; their paths', 'file'),
+			item('folder', 'Folder…', 'One or more folders; their paths', 'folder'),
+		] },
+		{ heading: 'Browser page', items: [
+			item('link', 'Page address', 'The URL and title of the browser tab in front', 'page'),
+			item('device-camera', 'Screenshot', 'The visible page, saved; its path', 'screenshot'),
+			item('inspect', 'Element…', 'Pick an element on the page; its context as text', 'element'),
+			item('device-camera-video', 'Video…', 'A recorded video; its path', 'video'),
+		] },
+		{ heading: 'Annotations', items: [item('comment', 'Annotations', 'The notes on the page in front', 'annotation')] },
+	]), 'Insert into the terminal (not sent)');
 	focusMenu();
 }
 
@@ -3587,9 +4184,8 @@ function openTerminalPinMenu(tabId: string): void {
 	openMenu(plusButton, [
 		...pinRows(s.terminals ?? [], tabId).map((row): MenuItem => ({
 			icon: row.icon, label: row.label, description: row.description, checked: row.pinned, command: 'pinTerminal',
-			run: () => post({ type: 'pinTerminal', id: row.id, tabId, pinned: !row.pinned, ...(terminalWatchOnly ? { mode: 'watch' as const } : {}) }),
+			run: () => post({ type: 'pinTerminal', id: row.id, tabId, pinned: !row.pinned }),
 		})),
-		watchOnlyToggle(() => openTerminalPinMenu(tabId)),
 		{
 			icon: 'add', label: 'New terminal for the agent', command: 'newTerminal', disabled: offer.kind !== 'on',
 			description: offer.kind === 'off' ? offer.reason : 'A shell in this chat\'s folder; you stay here',
@@ -3666,6 +4262,12 @@ function renameFromMenu(node: TabNode): void {
 }
 
 /** Decides which tabs are shown; `force` measures again even if nothing it depends on changed. */
+/** The hidden-tab count is green and pulses, as a thinking tab's mark does, while a tab in the dropdown is thinking. */
+function markOverflowWorking(): void {
+	const working = overflowIds.some(id => { const t = tabNodes.get(id)?.tab; return !!t && !t.terminal && t.status === 'working'; });
+	overflowCount.classList.toggle('status-working', working);
+}
+
 function layoutTabOverflow(force = false): void {
 	const s = state;
 	const strip = s ? stripOf(s) : [];
@@ -3713,6 +4315,7 @@ function layoutTabOverflow(force = false): void {
 	// Tabs that no longer fit: the ones still shown share the whole width left of the buttons.
 	tabRow.classList.toggle('stretched', overflowIds.length > 0);
 	overflowCount.textContent = overflowIds.length ? String(overflowIds.length) : '';
+	markOverflowWorking();
 	const more = overflowIds.length ? `All tabs · ${overflowIds.length} hidden` : 'All tabs';
 	overflowButton.title = more;
 	overflowButton.setAttribute('aria-label', more);
@@ -4397,6 +5000,7 @@ function renderTabs(s: ChatViewState): void {
 	renderProjectBar(groups);
 	// Decided before the switch animation measures, so a tab coming out of the dropdown does not flash.
 	layoutTabOverflow();
+	markOverflowWorking();
 	renderTabConfirm(s);
 	if (tabsBefore && frontTab) {
 		animateTabSwitch(tabsBefore, [frontTab, frontId]);
@@ -4566,7 +5170,8 @@ function tabNode(t: StripTab): TabNode {
 					run: () => setTimeout(() => askAgentMenu(overflowed ? overflowButton : label, terminal.id, ''), 0) },
 				...(control ? [{ icon: control.icon, label: control.label, description: control.description, command: 'setTerminalAgentControl',
 					run: () => post({ type: 'setTerminalAgentControl', id: terminal.id, allowed: control.allowed }) }] : []),
-				{ icon: 'comment', label: selected ? 'Send selection to chat' : 'Copy last output to chat', description: 'Adds it to the chat in front as context', command: 'terminalToChat', run: () => terminalView?.sendToChat(terminal.id) },
+				{ icon: 'comment', label: selected ? 'Send selection to chat…' : 'Copy last output to chat…', description: 'Adds it as context to a chat you choose', command: 'terminalToChat',
+					run: () => { const anchor = overflowed ? overflowButton : label; setTimeout(() => terminalView?.sendToChat(terminal.id, anchor), 0); } },
 				...websiteAccessRow(terminal).map((row, at) => at === 0 ? { ...row, separator: true } : row),
 				{ separator: true, icon: 'close', label: 'Close terminal', command: 'closeTerminal', run: () => closeFromStrip(node) },
 			], compact || overflowed ? node.tab.title : 'Terminal', undefined, keep);
@@ -5166,6 +5771,7 @@ function renderThread(s: ChatViewState): void {
 	const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 60;
 	let stick = atBottom;
 	let restore: number | undefined;
+	let switched = false;
 	const offset = s.entriesOffset ?? 0;
 	// The window moved. Forward (a new turn pushed the oldest out): the rows already drawn stay,
 	// and the leading ones go with their turns — a rebuild here, on every message of a long chat,
@@ -5196,6 +5802,7 @@ function renderThread(s: ChatViewState): void {
 		// Open/closed choices are keyed by position, so they belong to one chat:
 		// carried over, the next chat opened its own rows at the same indices.
 		if (s.chatId !== renderedChat) {
+			switched = true;
 			if (renderedChat) {
 				scrollByChat.set(renderedChat, atBottom ? 'bottom' : thread.scrollTop);
 			}
@@ -5316,13 +5923,22 @@ function renderThread(s: ChatViewState): void {
 	});
 	renderPendingSends(s);
 
-	if (fromBottom !== undefined) {
+	if (!switched && followingSend(s.chatId)) {
+		// Just sent: the end, whatever was on screen — and held there while the new rows settle.
+		pinThreadToEnd(300);
+	} else if (fromBottom !== undefined) {
 		thread.scrollTop = thread.scrollHeight - fromBottom;
 	} else if (stick) {
 		thread.scrollTop = thread.scrollHeight;
+		// Layout keeps settling after a chat switch (sticky prompts, fonts, code blocks);
+		// a single set left the thread short of the end. Re-pin for a moment; a wheel or touch cancels it.
+		if (switched) { pinThreadToEnd(300); }
 	} else if (restore !== undefined) {
 		thread.scrollTop = restore;
 	}
+	// Decided here, not left to the scroll event that follows: the frame `followThreadEnd` queued
+	// for these very changes may run first, and must not pull a restored position to the end.
+	if (!threadMoving && thread.clientHeight > 0) { threadFollowsEnd = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 60; }
 }
 
 /**
@@ -5424,12 +6040,18 @@ function renderPendingSends(s: ChatViewState): void {
 				: p.skill && p.skill.steps === 1 ? `/${p.skill.name} — sent when this turn ends`
 				: p.skill ? `/${p.skill.name}, prompt ${p.skill.step} of ${p.skill.steps} — ${p.skill.check ? `sent if: ${p.skill.check}` : 'sent when the turn before it ends'}`
 					: 'Sent when this turn ends' }));
-		if (p.kind === 'queue') {
-			const remove = button([icon('close')], { class: 'pending-remove', title: 'Do not send' });
+		// The × sits inside the message's own box, at its right — asked for: under
+		// it, at the end of the note, it was small and far from what it removes.
+		const body = el('div', { class: 'pending-body' }, bubble);
+		if (p.kind === 'queue' || p.withdrawable) {
+			const remove = button([icon(p.withdrawing ? 'loading' : 'close')], { class: 'pending-remove',
+				title: p.kind === 'queue' ? 'Remove from the queue — do not send'
+					: p.withdrawing ? 'Withdrawing…' : 'Withdraw — if the agent has not taken it in yet' });
+			if (p.withdrawing) { remove.disabled = true; }
 			remove.addEventListener('click', () => post({ type: 'unqueue', id: p.id }));
-			note.append(remove);
+			body.append(remove);
 		}
-		return el('div', { class: `prompt pending-send ${p.kind}` }, bubble, note);
+		return el('div', { class: `prompt pending-send ${p.kind}` }, body, note);
 	}));
 }
 
@@ -6674,6 +7296,7 @@ function renderPromptText(text: string, chipFor: (reference: string) => Attachme
 	const frames: { spaces: number; kind: string; list: HTMLElement; last: HTMLElement }[] = [];
 	const appendText = (target: HTMLElement, text: string) => target.append(...markAttachmentTokens(text, chipFor, rest => withFileIcons(markComposerText(rest, knownCommands(state), true))));
 	const lines = text.split('\n');
+	const continues = composerListChecker(lines);
 	let fence: string | undefined;
 	lines.forEach((line, index) => {
 		const delimiter = /^[ \t]*(`{3,}|~{3,})/.exec(line)?.[1];
@@ -6681,7 +7304,9 @@ function renderPromptText(text: string, chipFor: (reference: string) => Attachme
 			if (!fence) { fence = delimiter; }
 			else if (delimiter[0] === fence[0] && delimiter.length >= fence.length) { fence = undefined; }
 		}
-		const item = fence || delimiter ? undefined : composerListItem(line);
+		const found = fence || delimiter ? undefined : composerListItem(line);
+		// A numbered list starts at 1 or a; "3. later" on its own is a sentence.
+		const item = found && continues(index, found) ? found : undefined;
 		if (!item || !item.content.trim()) {
 			frames.length = 0;
 			appendText(root, line);
@@ -7537,6 +8162,8 @@ const modKey = isMacView ? '⌘' : 'Ctrl';
 function linkNode(url: string, text?: string): HTMLElement {
 	const local = !!localFileLink(url);
 	const link = el('span', { class: 'link', title: local ? `${url}\nOpen file in editor; project folder in VS Code Explorer, other folder in file manager` : `${url}\nClick: open in AI Browser · ${modKey}+click: system browser`, text });
+	// Read by the selection copy, which writes the link back as Markdown and HTML.
+	link.dataset.href = url;
 	link.tabIndex = 0;
 	link.addEventListener('keydown', event => {
 		if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); post({ type: 'openLink', url, external: false }); }
@@ -8219,6 +8846,7 @@ function attachmentIcon(kind: AttachmentKind): string {
 		case 'sharedPage': return 'globe';
 		case 'selection': return 'code';
 		case 'file': return 'file';
+		case 'folder': return 'folder';
 		case 'voice': return 'mic';
 		case 'video': return 'device-camera-video';
 		case 'pointAnnotation': case 'annotation': return 'comment';
@@ -8237,10 +8865,33 @@ function pillContent(label: string): Node[] {
  * fires (#365): Stop missed 10 of 10 presses at its centre during a reply,
  * the one moment it is pressed, and the agent and model pills likewise.
  */
+/** The usual paste mark — a clipboard with a page laid over it. Codicons has none. */
+function pasteGlyph(): SVGElement {
+	const ns = 'http://www.w3.org/2000/svg';
+	const make = (tag: string, attrs: Record<string, string>): SVGElement => {
+		const node = document.createElementNS(ns, tag);
+		for (const [key, value] of Object.entries(attrs)) { node.setAttribute(key, value); }
+		return node;
+	};
+	const svg = make('svg', {
+		class: 'paste-glyph', viewBox: '0 0 16 16', width: '14', height: '14', fill: 'none',
+		stroke: 'currentColor', 'stroke-width': '1.3', 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+		'aria-hidden': 'true',
+	});
+	// The board stops where the page covers it, so no fill is needed on a translucent disc.
+	svg.append(
+		make('path', { d: 'M7 12.5H3.5A1.5 1.5 0 0 1 2 11V4A1.5 1.5 0 0 1 3.5 2.5H4.5M8 2.5H9A1.5 1.5 0 0 1 10.5 4V6' }),
+		make('rect', { x: '4.5', y: '1', width: '3.5', height: '2.6', rx: '0.8' }),
+		make('rect', { x: '7', y: '6', width: '7', height: '9', rx: '1.3' }),
+		make('path', { d: 'M9.2 9.5H11.8M9.2 12H11.8' }),
+	);
+	return svg;
+}
+
 function setIcon(target: HTMLElement, name: string): void {
 	if (target.dataset.shown !== name) {
 		target.dataset.shown = name;
-		target.replaceChildren(icon(name));
+		target.replaceChildren(name === 'paste' ? pasteGlyph() : icon(name));
 	}
 }
 
@@ -8441,9 +9092,83 @@ contextButton.addEventListener('click', () => {
  * reads false in the view.
  */
 let stopRequested: { tab: string | undefined; turnsEnded: number | undefined } | undefined;
+/**
+ * Paste in Send's place (asked for): with nothing running, the box empty and text on the clipboard,
+ * the round button pastes instead. The host answers whether there is text (`composerClipboard`
+ * `peek`), asked when the box empties, when the window or the box gets focus, after a copy, and
+ * every few seconds while the view has focus and the box stays empty. Editor only: the clipboard
+ * read is the editor's (`env.clipboard`), so Chrome and the website keep a plain Send.
+ */
+let clipboardHasText = false;
+let clipboardPeekedAt = 0;
+let composerWasEmpty = false;
+const clipboardPollMs = 2_500;
+function composerEmpty(): boolean {
+	return !input.value.trim() && !state?.attachments.some(chip => !isPinChip(chip));
+}
+function canPasteHere(): boolean {
+	return !!state && (!state.surface || state.surface === 'editor');
+}
+function pasteMode(): boolean {
+	return clipboardHasText && canPasteHere() && !state?.running && composerEmpty() && !pendingPasteCount;
+}
+function peekClipboard(force = false): void {
+	if (!canPasteHere() || !composerEmpty()) { return; }
+	const now = Date.now();
+	if (!force && now - clipboardPeekedAt < 400) { return; }
+	clipboardPeekedAt = now;
+	post({ type: 'composerClipboard', action: 'peek' });
+}
+setInterval(() => { if (document.hasFocus() && !document.hidden) { peekClipboard(); } }, clipboardPollMs);
+window.addEventListener('focus', () => peekClipboard(true));
+input.addEventListener('focus', () => peekClipboard());
+document.addEventListener('copy', () => setTimeout(() => peekClipboard(true), 50));
+document.addEventListener('cut', () => setTimeout(() => peekClipboard(true), 50));
+/**
+ * The conversation a Paste press was for: the answer carries no chat, so text that lands after a switch
+ * to another conversation is dropped rather than typed into that one's box.
+ */
+let pasteRequestedFor: string | undefined;
+/** The host's answer: a peek updates the button; a paste puts the text where the caret is, as a paste would. */
+function composerClipboardAnswer(hasText: boolean, text: string | undefined): void {
+	clipboardHasText = hasText;
+	const wanted = pasteRequestedFor;
+	if (text !== undefined) { pasteRequestedFor = undefined; }
+	if (text !== undefined && wanted !== undefined && wanted === state?.chatId) {
+		input.focus();
+		const fake = { clipboardData: { getData: (type: string) => type === 'text/plain' ? text : '' }, preventDefault: () => { /* Nothing to prevent. */ } };
+		if (!pasteAttachmentTokens(fake as unknown as Pick<ClipboardEvent, 'clipboardData' | 'preventDefault'>)) {
+			input.setRangeText(text, input.selectionStart, input.selectionEnd, 'end');
+			input.dispatchEvent(new Event('input', { bubbles: true }));
+		}
+	}
+	renderSend();
+}
+
+/** Paste in Send's place, or Send back; true when the button is Paste now. */
+function renderPaste(hasContent: boolean): boolean {
+	// Asked once as the box empties (a send, a delete), not on every state post.
+	if (!hasContent && !composerWasEmpty) { peekClipboard(true); }
+	composerWasEmpty = !hasContent;
+	if (!pasteMode() || stopRequested) {
+		sendButton.classList.remove('paste');
+		return false;
+	}
+	closeSendMenu();
+	setIcon(sendButton, 'paste');
+	sendButton.classList.remove('stop', 'stopping');
+	sendButton.classList.add('paste');
+	sendButton.title = 'Paste from the clipboard — the box is empty';
+	sendButton.setAttribute('aria-label', 'Paste');
+	sendButton.disabled = false;
+	sendOptionsButton.disabled = true;
+	return true;
+}
+
 function renderSend(): void {
 	const running = state?.running ?? false;
 	const hasContent = !!input.value.trim() || !!state?.attachments.some(chip => !isPinChip(chip));
+	if (renderPaste(hasContent)) { return; }
 	const stop = running;
 	if (!stop || stopRequested?.tab !== state?.activeTab
 		|| (stopRequested?.turnsEnded !== undefined && state?.turnsEnded !== stopRequested.turnsEnded)) { stopRequested = undefined; }
@@ -8642,9 +9367,60 @@ function paintInput(): void {
 	// is one short of the textarea's.
 	inputMirror.replaceChildren(...markAttachmentTokens(input.value, chipOfToken, text => markComposerText(text, knownCommands(state))), '\u200b');
 	inputMirror.scrollTop = input.scrollTop;
+	alignLineStartBadges();
 }
 
+/**
+ * A badge that opens a line starts its capsule where the line starts, so its left edge
+ * meets the pinned chips under the box (asked for). The transparent `[` before it keeps
+ * its width, which the textarea's caret depends on; the capsule grows over it with a
+ * negative margin and the same padding, a net zero in the line's layout.
+ */
+function alignLineStartBadges(): void {
+	type Badge = { capsule: HTMLElement; bracket: HTMLElement; prefix: HTMLElement; gap: HTMLElement; label: HTMLElement; closer: HTMLElement };
+	const badges: Badge[] = [];
+	for (const wrap of inputMirror.querySelectorAll<HTMLElement>('.att-token-wrap')) {
+		const bracket = wrap.firstElementChild as HTMLElement | null;
+		const closer = wrap.lastElementChild as HTMLElement | null;
+		const capsule = wrap.querySelector<HTMLElement>(':scope > .att-token');
+		const prefix = capsule?.querySelector<HTMLElement>('.att-token-prefix');
+		const gap = prefix?.nextElementSibling as HTMLElement | null | undefined;
+		const label = capsule?.querySelector<HTMLElement>('.att-token-label');
+		if (!bracket || !closer || !capsule || !prefix || !gap || !label) { continue; }
+		badges.push({ capsule, bracket, prefix, gap, label, closer });
+	}
+	// Reset everything, then read, then write: one layout, not one per badge.
+	for (const b of badges) {
+		b.capsule.style.marginLeft = b.capsule.style.paddingLeft = '';
+		b.gap.style.marginRight = b.closer.style.marginLeft = '';
+	}
+	const lineLeft = inputMirror.getBoundingClientRect().left + (parseFloat(getComputedStyle(inputMirror).paddingLeft) || 0);
+	const plans = badges.map(b => {
+		const box = b.bracket.getClientRects()[0];
+		const lead = box && Math.abs(box.left - lineLeft) < 1 ? box.width : 0;
+		const start = b.prefix.getClientRects()[0];
+		const text = b.label.getClientRects()[0];
+		// The invisible `@N` and the spaces after it are as wide as the textarea's own glyphs, which
+		// vary with the number's digits; the label is drawn at a fixed distance from the icon instead,
+		// and the closing bracket gives the room back, so what follows the badge does not move.
+		const pull = start && text ? Math.max(0, text.left - start.left - badgeLabelOffset) : 0;
+		return { lead, pull };
+	});
+	badges.forEach((b, i) => {
+		const { lead, pull } = plans[i];
+		// At the start of a line the capsule moves over its transparent `[` rather than growing over
+		// it, so every badge of one label is drawn the same width wherever it sits.
+		if (lead) { b.capsule.style.marginLeft = `${-lead}px`; }
+		if (pull > 0.5) { b.gap.style.marginRight = `${-pull}px`; }
+		if (lead || pull > 0.5) { b.closer.style.marginLeft = `${lead + Math.max(0, pull > 0.5 ? pull : 0)}px`; }
+	});
+}
+/** Where a badge's label starts, from the left of its reserved `@N`: the icon (5 px in, 12 px wide) and a 4 px gap. */
+const badgeLabelOffset = 21;
+
 input.addEventListener('scroll', () => { inputMirror.scrollTop = input.scrollTop; });
+// Wrapping changes with the width, and with it which badges open a line.
+new ResizeObserver(() => alignLineStartBadges()).observe(inputMirror);
 
 /*
  * ↑ / ↓ walk through the messages sent before, as in a terminal: ↑ is older,
@@ -8793,7 +9569,10 @@ function requestStop(): void {
 
 sendButton.addEventListener('click', () => {
 	closeSendMenu();
-	if (sendButton.classList.contains('stop')) {
+	if (sendButton.classList.contains('paste')) {
+		pasteRequestedFor = state?.chatId;
+		post({ type: 'composerClipboard', action: 'paste' });
+	} else if (sendButton.classList.contains('stop')) {
 		requestStop();
 	} else {
 		send();
@@ -8826,7 +9605,7 @@ function refreshSendMenu(): void {
 
 function openSendMenu(): void {
 	clearTimeout(sendMenuCloseTimer);
-	if (sendButton.disabled) { return; }
+	if (sendButton.disabled || sendButton.classList.contains('paste')) { return; }
 	if (menu.classList.contains('open') && overlayAnchors.get(menu)?.anchor === sendButton) { return; }
 	const items = sendMenuItems();
 	sendMenuShape = JSON.stringify(items.map(item => [item.label, item.disabled, item.description]));
@@ -9210,8 +9989,9 @@ function send(mode?: 'queue'): void {
 	saveDraft();
 	autosize();
 	renderSend();
-	// A sent message always brings the thread down to it.
-	requestAnimationFrame(() => { thread.scrollTop = thread.scrollHeight; });
+	// A sent message always brings the thread down to it, and keeps it at the end while the
+	// prompt and the work under it arrive (`followAfterSend`).
+	followAfterSend(state?.chatId);
 }
 
 /* ---------------------------------------------------------------- the message flying into the chat */
@@ -9608,7 +10388,9 @@ document.addEventListener('keydown', event => {
 		return;
 	}
 	// Escape typed into a terminal is the shell's (vim, readline): xterm takes it first, and this must not act on it if it ever got here.
-	if (terminalView?.contains(event.target)) {
+	// Only the shell's own surface (xterm's hosts and the touch proxy in the stage, the phone key bar) counts: the terminal column also holds the docked
+	// conversation (message box, popups, switch card), where Escape is the chat's, as Alt+letter and Option+W already are.
+	if ((event.target as Element | null)?.closest?.(terminalInputSurface)) {
 		return;
 	}
 	// The innermost question first: a close being confirmed, then the switch card.
@@ -9660,6 +10442,15 @@ interface MenuItem {
 	readonly run: () => void;
 }
 
+/**
+ * Menu rows in named groups: the heading goes on each group's first row, and an empty group is
+ * left out. The groups and the rows inside them keep the order given.
+ */
+function menuGroups(groups: readonly { readonly heading: string; readonly items: readonly MenuItem[] }[]): MenuItem[] {
+	return groups.filter(group => group.items.length).flatMap(group =>
+		group.items.map((item, index) => index ? item : { ...item, heading: group.heading }));
+}
+
 /** A button at the right of a menu's heading. */
 interface MenuAction {
 	readonly icon: string;
@@ -9687,12 +10478,22 @@ function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, acti
 			action.run();
 		});
 	}
+	// A group heading or divider on a row the surface hides moves to the next row shown, so a group
+	// whose first row is hidden keeps its heading, and one with no row shown loses it.
+	let carried: { heading?: string; separator?: boolean } = {};
 	menu.replaceChildren(
 		heading ? el('div', { class: 'menu-heading' }, el('span', { text: heading }), headingAction) : '',
 		note ? el('div', { class: 'menu-note', text: note }) : '',
 		...items.flatMap(item => {
 			const control = item.command ? gate(item.command) : { s: 'on' } as const;
-			if (control.s === 'hidden') { return []; }
+			if (control.s === 'hidden') {
+				if (item.heading || item.separator) { carried = { heading: item.heading ?? carried.heading, separator: item.separator || carried.separator }; }
+				return [];
+			}
+			if (carried.heading || carried.separator) {
+				item = { ...item, heading: item.heading ?? carried.heading, separator: item.separator || carried.separator };
+				carried = {};
+			}
 			if (control.s === 'off') { item = { ...item, disabled: true, description: control.reason }; }
 			const b = button([
 				item.icon ? icon(item.icon, 'menu-icon') : el('span', { class: 'menu-icon' }),
@@ -9716,7 +10517,7 @@ function openMenu(anchor: HTMLElement, items: MenuItem[], heading?: string, acti
 				}
 				item.run();
 			});
-			const rows = item.heading ? [el('div', { class: 'menu-heading' }, el('span', { text: item.heading })), b] : [b];
+			const rows = item.heading ? [el('div', { class: 'menu-heading menu-group-heading' }, el('span', { text: item.heading })), b] : [b];
 			if (!item.separator) { return rows; }
 			const line = el('div', { class: 'menu-separator' });
 			line.setAttribute('role', 'separator');
@@ -10911,6 +11712,8 @@ function renderWorkdir(s: ChatViewState): void {
 		gitFolder = folder;
 		githubAnswer = undefined;
 		githubPending = false;
+		githubBranchShape = '';
+		githubAgain = false;
 		if (composerTab === 'github') { requestGithub(); }
 		if (composerTab === 'files') { openFilesTab(); }
 		branchState = undefined;
@@ -11292,7 +12095,7 @@ for (const [tab, tip] of [
 	[composerTabChat, 'Message box'],
 	[composerTabSkills, 'Toolbar skills'],
 	[composerTabActivity, 'Agents and access of this chat'],
-	[composerTabHistory, 'Messages of this conversation (Alt+O; Alt+H also works)'],
+	[composerTabHistory, 'Your messages in this conversation (Alt+P)'],
 	[composerTabBash, 'Shell commands of this chat'],
 	[composerTabFiles, 'Files of the working folder'],
 	[composerTabGithub, 'Pull requests and Actions runs of this folder\'s repository'],
@@ -12331,15 +13134,22 @@ function newId(): string {
 
 /* "+" */
 
-const attachItems: { kind: AttachmentKind; icon: string; label: string; needsTab: boolean }[] = [
-	{ kind: 'video', icon: 'device-camera-video', label: 'Record the browser page', needsTab: true },
-	{ kind: 'screenshot', icon: 'device-camera', label: 'Screenshot of the page', needsTab: true },
-	{ kind: 'element', icon: 'inspect', label: 'Element from the page…', needsTab: true },
-	{ kind: 'page', icon: 'link', label: 'Page address', needsTab: true },
-	{ kind: 'sharedPage', icon: 'pin', label: 'Pin browser tab', needsTab: true },
-	{ kind: 'annotation', icon: 'comment-add', label: 'Add annotation to element…', needsTab: true },
-	{ kind: 'pointAnnotation', icon: 'comment-add', label: 'Add annotation anywhere…', needsTab: true },
-	{ kind: 'file', icon: 'file', label: 'File…', needsTab: false },
+/**
+ * The "+" menu's rows, in groups ordered from what is nearest at hand to what reaches furthest: what is
+ * open now, files, the browser page (cheapest first: an address, a live tab, a picture, a pick, a
+ * recording), notes on the page, then other chats and terminals. `group` names the heading.
+ */
+const attachItems: { kind: AttachmentKind; icon: string; label: string; group: 'files' | 'page' | 'annotations'; editorOnly?: boolean }[] = [
+	{ kind: 'file', icon: 'file', label: 'File…', group: 'files' },
+	// A folder is a path on the editor's machine: Chrome and the website upload files, they cannot name a folder there.
+	{ kind: 'folder', icon: 'folder', label: 'Folder…', group: 'files', editorOnly: true },
+	{ kind: 'page', icon: 'link', label: 'Page address', group: 'page' },
+	{ kind: 'sharedPage', icon: 'pin', label: 'Pin browser tab', group: 'page' },
+	{ kind: 'screenshot', icon: 'device-camera', label: 'Screenshot of the page', group: 'page' },
+	{ kind: 'element', icon: 'inspect', label: 'Element from the page…', group: 'page' },
+	{ kind: 'video', icon: 'device-camera-video', label: 'Record the browser page', group: 'page' },
+	{ kind: 'annotation', icon: 'comment-add', label: 'Add annotation to element…', group: 'annotations' },
+	{ kind: 'pointAnnotation', icon: 'comment-add', label: 'Add annotation anywhere…', group: 'annotations' },
 ];
 
 plusButton.addEventListener('click', () => {
@@ -12352,14 +13162,27 @@ plusButton.addEventListener('click', () => {
 		icon: attachmentIcon(chip.kind), label: chip.kind === 'selection' ? 'Attach current selection' : 'Attach current file',
 		description: chip.label, suggested: true, run: () => post({ type: 'acceptSuggestion', id: chip.id }),
 	}));
-	const chatItems: MenuItem[] = chatConnectionsEnabled && (!state?.surface || state.surface === 'editor') ? [{ icon: 'comment-discussion', label: 'Connect a chat…', run: () => { if (state) { post({ type: 'connectChat', chatId: state.chatId }); } } }] : [];
-	openMenu(plusButton, [...chatItems, ...suggestions, ...browserMenuItems(), ...attachItems.map(item => ({
-		icon: item.icon,
-		label: item.label,
-		description: item.needsTab ? pageProblem : undefined,
-		disabled: item.needsTab && !!pageProblem,
-		run: () => post({ type: 'attach', kind: item.kind }),
-	})), ...terminalPinItems()], 'Attach');
+	const onEditor = !state?.surface || state.surface === 'editor';
+	const chatItems: MenuItem[] = chatConnectionsEnabled && onEditor ? [{ icon: 'comment-discussion', label: 'Connect a chat…', run: () => { if (state) { post({ type: 'connectChat', chatId: state.chatId }); } } }] : [];
+	const rows = (group: typeof attachItems[number]['group']): MenuItem[] => attachItems
+		.filter(item => item.group === group && (onEditor || !item.editorOnly))
+		.map(item => {
+			const needsTab = item.group !== 'files';
+			return {
+				icon: item.icon,
+				label: item.label,
+				description: needsTab ? pageProblem : undefined,
+				disabled: needsTab && !!pageProblem,
+				run: () => post({ type: 'attach', kind: item.kind }),
+			};
+		});
+	openMenu(plusButton, menuGroups([
+		{ heading: 'Open now', items: suggestions },
+		{ heading: 'Files', items: rows('files') },
+		{ heading: 'Browser page', items: rows('page') },
+		{ heading: 'Annotations', items: rows('annotations') },
+		{ heading: 'Chats and terminals', items: [...chatItems, ...terminalPinItems()] },
+	]));
 });
 
 /* "U" */
@@ -13753,6 +14576,17 @@ function createSoundSettings(): HTMLElement {
 	const away = el('input'); away.type = 'checkbox'; away.checked = current.notifyAway; away.disabled = !current.notify;
 	notify.addEventListener('change', () => { away.disabled = !notify.checked; save({ notify: notify.checked }); if (remote && notify.checked && typeof Notification !== 'undefined' && Notification.permission === 'default') { void Notification.requestPermission().catch(() => undefined); }; });
 	away.addEventListener('change', () => save({ notifyAway: away.checked }));
+	// The GitHub tab's bell on an Actions run: its own sound and notification (asked for).
+	const runChoice = el('select'); runChoice.dataset.appearance = 'sound'; runChoice.setAttribute('aria-label', 'Actions run sound');
+	{ const o = el('option', { text: 'No sound' }); o.value = 'none'; runChoice.append(o); }
+	for (const [key, label] of Object.entries(chatSoundLabels)) { const o = el('option', { text: label }); o.value = key; runChoice.append(o); }
+	runChoice.value = current.githubRun ?? 'success';
+	const runTest = button([icon('play'), 'Test'], { class: 'ghost' });
+	const playRun = () => { if (runChoice.value !== 'none') { playChatSound(runChoice.value as ChatSound, Number(volume.value), 1); } };
+	runChoice.addEventListener('change', () => { if (!remote) { post({ type: 'soundSettings', action: 'set', githubRun: runChoice.value as ChatSound | 'none' }); } playRun(); });
+	runTest.addEventListener('click', playRun);
+	const runNotify = el('input'); runNotify.type = 'checkbox'; runNotify.checked = current.githubRunNotify !== false;
+	runNotify.addEventListener('change', () => { if (!remote) { post({ type: 'soundSettings', action: 'set', githubRunNotify: runNotify.checked }); } });
 	content.append(
 		el('div', { class: 'feature-settings-row' }, el('label', { class: 'openrouter-check' }, enabled, el('span', { text: 'Play a sound when agents finish' })),
 			el('p', { class: 'feature-settings-note', text: 'The default for the speaker button beside the usage meter. A press there switches it on this device until you change this.' })),
@@ -13765,6 +14599,10 @@ function createSoundSettings(): HTMLElement {
 			el('label', { class: 'openrouter-check' }, notify, el('span', { text: 'Show a system notification when agents finish' })),
 			el('label', { class: 'openrouter-check' }, away, el('span', { text: 'Only when the window is not focused' })),
 			el('p', { class: 'feature-settings-note', text: 'VS Code shows it through the system (macOS Notification Center, Windows, notify-send on Linux). Chrome and the website show the browser\'s own, once you allow it.' })),
+		...(remote ? [] : [el('div', { class: 'feature-settings-row' }, el('strong', { text: 'GitHub Actions' }),
+			el('div', { class: 'sound-row' }, runChoice, runTest),
+			el('label', { class: 'openrouter-check' }, runNotify, el('span', { text: 'Show a system notification when the run ends' })),
+			el('p', { class: 'feature-settings-note', text: 'For runs you ring the bell for in the GitHub tab (hover a running run). Uses the volume above; the notification shows whether or not the window is focused.' }))]),
 		el('p', { class: 'feature-settings-note', text: remote ? 'Stored on this device for this browser only. What is not changed here follows the settings in VS Code.' : 'Stored in VS Code settings (aiBrowser.chat.sound.*, aiBrowser.chat.notifications.*) for your user. Chrome and the website follow them unless changed there.' }));
 	return content;
 }

@@ -56,6 +56,58 @@
   --vscode-toolbar-activeBackground: #454545 !important;
   --vscode-toolbar-hoverBackground: #ffffff16 !important;
   --vscode-widget-border: #454545 !important;
+  /* Read by VS Code's own default webview styles (blockquote, code, kbd, scrollbars, find), which
+     come from the editor's theme; a forced theme must answer them too, or a light chat over a dark
+     editor draws a dark quote with dark text. See "Things that break silently". */
+  --vscode-editor-foreground: #cccccc !important;
+  --vscode-textBlockQuote-background: #2b2b2b !important;
+  --vscode-textBlockQuote-border: #616161 !important;
+  --vscode-textPreformat-background: #3c3c3c !important;
+  --vscode-keybindingLabel-background: #8080802b !important;
+  --vscode-keybindingLabel-foreground: #cccccc !important;
+  --vscode-keybindingLabel-border: #33333399 !important;
+  --vscode-keybindingLabel-bottomBorder: #44444499 !important;
+  --vscode-scrollbarSlider-background: #79797966 !important;
+  --vscode-scrollbarSlider-hoverBackground: #646464b3 !important;
+  --vscode-scrollbarSlider-activeBackground: #bfbfbf66 !important;
+  --vscode-editor-findMatchBackground: #9e6a03 !important;
+  --vscode-editor-findMatchHighlightBackground: #ea5c0055 !important;
+  --vscode-editor-selectionBackground: #264f78 !important;
+  /* Read by the chat itself and not covered above. */
+  --vscode-notificationsInfoIcon-foreground: #3794ff !important;
+  --vscode-notificationsWarningIcon-foreground: #cca700 !important;
+  --vscode-notificationsErrorIcon-foreground: #f14c4c !important;
+  --vscode-editorInfo-foreground: #3794ff !important;
+  --vscode-icon-foreground: #cccccc !important;
+  --vscode-badge-background: #616161 !important;
+  --vscode-badge-foreground: #f8f8f8 !important;
+  --vscode-button-secondaryForeground: #cccccc !important;
+  --vscode-checkbox-background: #313131 !important;
+  --vscode-checkbox-border: #3c3c3c !important;
+  --vscode-checkbox-foreground: #cccccc !important;
+  --vscode-checkbox-selectBackground: #0078d4 !important;
+  --vscode-progressBar-background: #0078d4 !important;
+  --vscode-debugTokenExpression-name: #c586c0 !important;
+  --vscode-debugTokenExpression-string: #ce9178 !important;
+  --vscode-debugTokenExpression-number: #b5cea8 !important;
+  --vscode-debugTokenExpression-boolean: #4e94ce !important;
+  --vscode-debugTokenExpression-value: #cccccc99 !important;
+  --vscode-symbolIcon-propertyForeground: #9cdcfe !important;
+  --vscode-gitDecoration-untrackedResourceForeground: #73c991 !important;
+  --vscode-charts-purple: #b180d7 !important;
+  --vscode-charts-foreground: #cccccc !important;
+  --vscode-terminal-background: #181818 !important;
+  --vscode-terminal-foreground: #cccccc !important;
+  --vscode-terminalCursor-foreground: #aeafad !important;
+  --vscode-terminal-selectionBackground: #264f78 !important;
+  --vscode-terminal-ansiBlack: #000000 !important; --vscode-terminal-ansiRed: #cd3131 !important;
+  --vscode-terminal-ansiGreen: #0dbc79 !important; --vscode-terminal-ansiYellow: #e5e510 !important;
+  --vscode-terminal-ansiBlue: #2472c8 !important; --vscode-terminal-ansiMagenta: #bc3fbc !important;
+  --vscode-terminal-ansiCyan: #11a8cd !important; --vscode-terminal-ansiWhite: #e5e5e5 !important;
+  --vscode-terminal-ansiBrightBlack: #666666 !important; --vscode-terminal-ansiBrightRed: #f14c4c !important;
+  --vscode-terminal-ansiBrightGreen: #23d18b !important; --vscode-terminal-ansiBrightYellow: #f5f543 !important;
+  --vscode-terminal-ansiBrightBlue: #3b8eea !important; --vscode-terminal-ansiBrightMagenta: #d670d6 !important;
+  --vscode-terminal-ansiBrightCyan: #29b8db !important; --vscode-terminal-ansiBrightWhite: #e5e5e5 !important;
 }
 
 :root[data-theme="light"], :root[data-theme="light"] body {
@@ -115,4 +167,54 @@
   --vscode-toolbar-activeBackground: #dce2e9 !important;
   --vscode-toolbar-hoverBackground: #24292f12 !important;
   --vscode-widget-border: #c7cdd4 !important;
+  /* VS Code's default webview styles, as in the dark block above. */
+  --vscode-editor-foreground: #24292f !important;
+  --vscode-textBlockQuote-background: #f1f4f7 !important;
+  --vscode-textBlockQuote-border: #d0d7de !important;
+  --vscode-textPreformat-background: #eef1f5 !important;
+  --vscode-keybindingLabel-background: #f3f5f7 !important;
+  --vscode-keybindingLabel-foreground: #24292f !important;
+  --vscode-keybindingLabel-border: #d0d7de !important;
+  --vscode-keybindingLabel-bottomBorder: #b8c0c8 !important;
+  --vscode-scrollbarSlider-background: #6e778166 !important;
+  --vscode-scrollbarSlider-hoverBackground: #6e7781a3 !important;
+  --vscode-scrollbarSlider-activeBackground: #57606ab3 !important;
+  --vscode-editor-findMatchBackground: #ffd33d99 !important;
+  --vscode-editor-findMatchHighlightBackground: #fff1a6 !important;
+  --vscode-editor-selectionBackground: #add6ff !important;
+  /* Read by the chat itself and not covered above. */
+  --vscode-notificationsInfoIcon-foreground: #0969da !important;
+  --vscode-notificationsWarningIcon-foreground: #9a6700 !important;
+  --vscode-notificationsErrorIcon-foreground: #b42318 !important;
+  --vscode-editorInfo-foreground: #0969da !important;
+  --vscode-icon-foreground: #424a53 !important;
+  --vscode-badge-background: #e1e6eb !important;
+  --vscode-badge-foreground: #24292f !important;
+  --vscode-button-secondaryForeground: #24292f !important;
+  --vscode-checkbox-background: #ffffff !important;
+  --vscode-checkbox-border: #c7cdd4 !important;
+  --vscode-checkbox-foreground: #24292f !important;
+  --vscode-checkbox-selectBackground: #0969da !important;
+  --vscode-progressBar-background: #0969da !important;
+  --vscode-debugTokenExpression-name: #8250df !important;
+  --vscode-debugTokenExpression-string: #a31515 !important;
+  --vscode-debugTokenExpression-number: #098658 !important;
+  --vscode-debugTokenExpression-boolean: #0000ff !important;
+  --vscode-debugTokenExpression-value: #57606a !important;
+  --vscode-symbolIcon-propertyForeground: #953800 !important;
+  --vscode-gitDecoration-untrackedResourceForeground: #1a7f37 !important;
+  --vscode-charts-purple: #8250df !important;
+  --vscode-charts-foreground: #24292f !important;
+  --vscode-terminal-background: #f7f8fa !important;
+  --vscode-terminal-foreground: #24292f !important;
+  --vscode-terminalCursor-foreground: #24292f !important;
+  --vscode-terminal-selectionBackground: #add6ff !important;
+  --vscode-terminal-ansiBlack: #000000 !important; --vscode-terminal-ansiRed: #cd3131 !important;
+  --vscode-terminal-ansiGreen: #107c10 !important; --vscode-terminal-ansiYellow: #949800 !important;
+  --vscode-terminal-ansiBlue: #0451a5 !important; --vscode-terminal-ansiMagenta: #bc05bc !important;
+  --vscode-terminal-ansiCyan: #0598bc !important; --vscode-terminal-ansiWhite: #555555 !important;
+  --vscode-terminal-ansiBrightBlack: #666666 !important; --vscode-terminal-ansiBrightRed: #cd3131 !important;
+  --vscode-terminal-ansiBrightGreen: #14ce14 !important; --vscode-terminal-ansiBrightYellow: #b5ba00 !important;
+  --vscode-terminal-ansiBrightBlue: #0451a5 !important; --vscode-terminal-ansiBrightMagenta: #bc05bc !important;
+  --vscode-terminal-ansiBrightCyan: #0598bc !important; --vscode-terminal-ansiBrightWhite: #a5a5a5 !important;
 }

@@ -414,10 +414,10 @@ async function attachFromChrome(kind: string): Promise<void> {
     await annotations.start(tab.id, chatId, kind === 'pointAnnotation' ? 'point' : 'element'); return;
   }
   if (kind === 'file') {
-    const input = document.createElement('input'); input.type = 'file';
+    const input = document.createElement('input'); input.type = 'file'; input.multiple = true;
     input.addEventListener('change', () => {
-      const file = input.files?.[0];
-      if (file) { void fileAttachment(chatId, current, file, file.name, 'file').catch(error => showFeedback(String(error))); }
+      const files = Array.from(input.files ?? []);
+      void (async () => { for (const file of files) { await fileAttachment(chatId, current, file, file.name, 'file'); } })().catch(error => showFeedback(String(error)));
       input.remove();
     });
     input.addEventListener('cancel', () => input.remove());

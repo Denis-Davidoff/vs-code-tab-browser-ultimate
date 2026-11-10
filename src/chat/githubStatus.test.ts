@@ -1,6 +1,6 @@
 import { deepStrictEqual, strictEqual, throws } from 'node:assert';
 import { test } from 'node:test';
-import { canOfferPullRequest, parseCreatedPr, pullRequestBody, pullRequestHead, pullRequestTitle, parseApiPullRequests, parseApiRuns, parseGhPullRequests, parseGhRuns, pickGithubRemote, runState, summarizeChecks } from './githubStatus.ts';
+import { canOfferPullRequest, githubFieldError, parseCreatedPr, pullRequestBody, pullRequestHead, pullRequestTitle, parseApiPullRequests, parseApiRuns, parseGhPullRequests, parseGhRuns, parseGhWorkflows, pickGithubRemote, workflowFileUrl, workflowPath, runState, summarizeChecks, parseWatchedRun, runWatchKey, runInFlight, runEndedText } from './githubStatus.ts';
 
 test('summarizeChecks mixes check runs and status contexts', () => {
 	deepStrictEqual(summarizeChecks([
@@ -61,6 +61,8 @@ test('a pull request is offered for a branch that has none and is not the defaul
 	strictEqual(canOfferPullRequest({ ...base, branch: 'feat', defaultBranch: undefined }), false);
 	const pr = { number: 1, title: 't', url: 'https://github.com/o/n/pull/1', author: 'a', branch: 'feat', draft: false, updatedAt: '', review: '' };
 	strictEqual(canOfferPullRequest({ ...base, branch: 'feat', prs: [pr] }), false);
+	// A merged pull request's branch, deleted on the remote: nothing to open a pull request for.
+	strictEqual(canOfferPullRequest({ ...base, branch: 'feat', upstreamGone: true }), false);
 });
 
 test('the head names the fork when the branch was pushed elsewhere', () => {
@@ -97,4 +99,51 @@ test('the created pull request is read from the API and from gh', () => {
 	deepStrictEqual(parseCreatedPr('Creating...\nhttps://github.com/o/n/pull/12\n'), { number: 12, url: 'https://github.com/o/n/pull/12' });
 	strictEqual(parseCreatedPr('{"number":7,"html_url":"https://evil.example/x"}'), undefined);
 	strictEqual(parseCreatedPr('nothing'), undefined);
+});
+
+test('githubFieldError explains a code-only validation error', () => {
+	strictEqual(githubFieldError({ field: 'head', code: 'invalid' }), 'The branch is not on GitHub. Push it (Branches window → Publish), then try again.');
+	strictEqual(githubFieldError({ field: 'title', code: 'missing_field' }), 'Validation failed: title is missing field.');
+	strictEqual(githubFieldError({ code: 'custom' }), undefined);
+	strictEqual(githubFieldError(undefined), undefined);
+});
+
+test('a run names the workflow file it came from, and only a real workflow file', () => {
+	const sha = 'a'.repeat(40);
+	const workflows = parseGhWorkflows(JSON.stringify([{ id: 7, path: '.github/workflows/ci.yml' }, { id: 8, path: 'dynamic/github-code-scanning/codeql' }, { id: 9, path: '.github/workflows/../../x.yml' }]));
+	deepStrictEqual([...workflows], [[7, '.github/workflows/ci.yml']]);
+	const gh = parseGhRuns(JSON.stringify([
+		{ databaseId: 5, name: 'CI', url: 'https://github.com/o/n/actions/runs/5', headBranch: 'main', headSha: sha, workflowDatabaseId: 7 },
+		{ databaseId: 6, name: 'CodeQL', url: 'https://github.com/o/n/actions/runs/6', headBranch: 'main', workflowDatabaseId: 8 },
+	]), 'main', workflows);
+	strictEqual(gh[0].workflowPath, '.github/workflows/ci.yml');
+	strictEqual(gh[0].sha, sha);
+	strictEqual(gh[1].workflowPath, undefined);
+	const api = parseApiRuns(JSON.stringify({ workflow_runs: [{ id: 5, html_url: 'https://github.com/o/n/actions/runs/5', head_branch: 'feat/x', path: '.github/workflows/release.yaml', head_sha: 'nope' }] }));
+	strictEqual(api[0].workflowPath, '.github/workflows/release.yaml');
+	strictEqual(api[0].sha, undefined);
+	strictEqual(workflowFileUrl('o/n', gh[0]), `https://github.com/o/n/blob/${sha}/.github/workflows/ci.yml`);
+	strictEqual(workflowFileUrl('o/n', api[0]), 'https://github.com/o/n/blob/feat/x/.github/workflows/release.yaml');
+	strictEqual(workflowPath('.github/workflows/sub/x.yml'), undefined);
+	strictEqual(workflowPath('.github/workflows/x.txt'), undefined);
+});
+
+test('a watched run reads alike from gh and from the API', () => {
+	deepStrictEqual(parseWatchedRun(JSON.stringify({ status: 'in_progress', conclusion: '', displayTitle: 'Fix', name: 'CI', url: 'https://github.com/o/r/actions/runs/1' })),
+		{ state: 'running', title: 'Fix', url: 'https://github.com/o/r/actions/runs/1' });
+	deepStrictEqual(parseWatchedRun(JSON.stringify({ status: 'completed', conclusion: 'failure', display_title: 'Fix', html_url: 'https://github.com/o/r/actions/runs/1' })),
+		{ state: 'failure', title: 'Fix', url: 'https://github.com/o/r/actions/runs/1' });
+	deepStrictEqual(parseWatchedRun(JSON.stringify({ status: 'completed', conclusion: 'success', name: 'CI', url: 'javascript:alert(1)' })), { state: 'success', title: 'CI' });
+	strictEqual(parseWatchedRun('[]'), undefined);
+	strictEqual(parseWatchedRun('not json'), undefined);
+	strictEqual(parseWatchedRun('{}'), undefined);
+});
+
+test('run watch keys, in flight, ended text', () => {
+	strictEqual(runWatchKey('Owner/Repo', 42), 'owner/repo#42');
+	strictEqual(runInFlight('running'), true);
+	strictEqual(runInFlight('queued'), true);
+	strictEqual(runInFlight('success'), false);
+	strictEqual(runEndedText('failure'), 'Failed.');
+	strictEqual(runEndedText('other'), 'Finished.');
 });

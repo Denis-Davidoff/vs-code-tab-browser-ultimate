@@ -53,7 +53,7 @@ test('real input handlers continue lists without sending; ordinary and modified 
 	assert.equal(f.input.value, '1. Item\n2. ');
 	assert.equal(f.sent.length, 0);
 	f.event('keydown', { key: 'Tab' });
-	assert.equal(f.input.value, '1. Item\n  2. ');
+	assert.equal(f.input.value, '1. Item\n  1. ');
 	f.event('keydown', { key: 'Tab', shiftKey: true });
 	assert.equal(f.input.value, '1. Item\n2. ');
 	f.event('keydown', { key: 'Enter', metaKey: true });

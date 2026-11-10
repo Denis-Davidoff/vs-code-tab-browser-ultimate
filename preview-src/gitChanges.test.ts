@@ -65,10 +65,12 @@ test('mixed changes ask staged-only or all, and dispatch the exact chosen scope'
 	const { footer, actions } = panel(['staged.txt'], ['unstaged.txt']);
 	assert.match(footer.textContent, /What would you like to commit/);
 	const choices = nodes(footer, 'git-changes-commit');
-	assert.equal(choices.length, 3);
+	assert.equal(choices.length, 4);
 	assert.match(choices[2].textContent, /& Push$/);
+	// With something staged, "Commit staged (N) & Push" stands last, below every note and button.
+	assert.match(choices[3].textContent, /^Commit staged \(1\) & Push$/);
 	for (const choice of choices) { choice.click(); }
-	assert.deepEqual(actions, [{ kind: 'staged' }, { kind: 'all' }, { kind: 'all+push' }]);
+	assert.deepEqual(actions, [{ kind: 'staged' }, { kind: 'all' }, { kind: 'all+push' }, { kind: 'staged+push' }]);
 });
 
 test('an empty index offers staging all first and does not start a commit', () => {

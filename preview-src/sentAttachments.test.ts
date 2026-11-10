@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { ScriptTarget, transpileModule } from 'typescript';
-import { composerLinks, composerListItem } from './composerFormatting.ts';
+import { composerLinks, composerListChecker, composerListItem } from './composerFormatting.ts';
 import { attachmentMarker, readAttachmentMarkers } from './attachmentMarkers.ts';
 
 const source = readFileSync('preview-src/chat.ts', 'utf8');
@@ -46,7 +46,7 @@ function fixture(entry: any) {
 		gate: () => ({ s: 'on' }),
 		attachmentClipboardType: 'application/x-ai-browser-attachments',
 		attachmentMarker, sentAttachmentCopySequence: 0,
-		composerLinks, composerListItem, linkNode: (url: string, text: string) => element('span', { class: 'link', text, title: url }),
+		composerLinks, composerListChecker, composerListItem, linkNode: (url: string, text: string) => element('span', { class: 'link', text, title: url }),
 	};
 	const code = [source.match(/const attachmentTokenPattern = [^\n]+/)![0],
 		...['attachmentToken', 'tokensIn', 'plainToken', 'chipIcon', 'attachmentIcon', 'markAttachmentTokens',
@@ -141,6 +141,15 @@ test('user prompts render nested lists, inline attachments and links together wi
 	assert.equal(prompt.querySelectorAll('.att-token-wrap').length, 3);
 	assert.equal(prompt.querySelectorAll('.bubble-attachments').length, 0);
 	assert.equal(prompt.querySelectorAll('.link')[0].title, 'https://google.com/');
+});
+
+test('a sent message renders an ordered list only from 1 or a', () => {
+	for (const text of ['2. later\n3. more', 'b) one']) {
+		const message = { ...entry, text };
+		assert.equal(fixture(message).api.promptNode(message).querySelectorAll('ol').length, 0, text);
+	}
+	const message = { ...entry, text: 'a) one\nb) two' };
+	assert.equal(fixture(message).api.promptNode(message).querySelectorAll('li').length, 2);
 });
 
 test('reattaching saved content makes a fresh attachment while preserving file, image and snapshot data', () => {

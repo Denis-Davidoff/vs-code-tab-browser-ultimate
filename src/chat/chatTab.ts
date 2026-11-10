@@ -543,7 +543,7 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 	 * shows it as waiting, and puts it where it was taken in — before the output
 	 * that follows a tool's result, or at the start of its own turn.
 	 */
-	private _waiting: { readonly id: string; readonly entry: UserEntry; readonly pending: Pending }[] = [];
+	private _waiting: { readonly id: string; readonly entry: UserEntry; readonly pending: Pending; pin?: { note: string | undefined; signature: string | undefined } }[] = [];
 	/** Terminal inputs a card waits on, by approval id: the grant is minted when the answer is yes (`_grantTerminal`). */
 	private readonly _terminalApprovals = new Map<string, TerminalApproval>();
 	/** A tool's result came after the oldest waiting prompt was sent: the next output is its taking in. */
@@ -662,7 +662,8 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 	/** The messages not in the conversation yet, for the view; see `PendingSend`. */
 	public get pendingSends(): PendingSend[] {
 		return [
-			...this._waiting.map(w => ({ id: w.id, text: w.entry.text, kind: 'steer' as const, attachments: w.entry.attachments, chips: w.entry.attachmentData?.map(d => d.chip) })),
+			...this._waiting.map(w => ({ id: w.id, text: w.entry.text, kind: 'steer' as const, attachments: w.entry.attachments, chips: w.entry.attachmentData?.map(d => d.chip),
+				...(this._canWithdraw() && w.pending.resend ? { withdrawable: true, ...(this._withdrawing.has(w.id) ? { withdrawing: true } : {}) } : {}) })),
 			...this._queued.map(q => ({
 				id: q.id, text: q.text, kind: 'queue' as const, attachments: q.attachments.map(a => `${attachmentReference(a.chip)} ${a.chip.label}`), chips: q.attachments.map(a => a.chip),
 				skill: q.step ? { name: q.step.name, step: q.step.step, steps: q.step.steps, check: q.step.check }
@@ -778,7 +779,56 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 			this._post();
 			return true;
 		}
+		if (this._waiting.some(w => w.id === id)) {
+			void this._withdrawWaiting(id);
+			return true;
+		}
 		return false;
+	}
+
+	/** The session can take back a waiting message — for Claude Code, once its process said so. */
+	private _canWithdraw(): boolean {
+		const session = this._session;
+		return !!session?.withdraw && ('canWithdraw' in session ? session.canWithdraw === true : true);
+	}
+
+	/** Ids of waiting messages whose withdrawal is on its way: their × shows it, and a second click does nothing. */
+	private readonly _withdrawing = new Set<string>();
+
+	/**
+	 * A message sent during a turn and not taken in yet, taken back: the agent
+	 * is asked to drop it (Claude Code's `cancel_async_message`), and only when
+	 * it says it did does the message leave the chat — an answer of "no" means
+	 * the running turn already has it, and it stays to be placed as usual.
+	 */
+	private async _withdrawWaiting(id: string): Promise<void> {
+		const session = this._session;
+		if (!session?.withdraw || this._withdrawing.has(id)) {
+			return;
+		}
+		this._withdrawing.add(id);
+		this._post();
+		let withdrawn = false;
+		try {
+			withdrawn = await session.withdraw(id);
+		} finally {
+			this._withdrawing.delete(id);
+		}
+		const at = this._waiting.findIndex(w => w.id === id);
+		if (withdrawn && at >= 0) {
+			// The agent never saw it, so neither did the pin note it carried (#540): Claude
+			// Code's send had already resolved as delivered, and nothing else undoes the mark.
+			const [gone] = this._waiting.splice(at, 1);
+			if (gone.pin) { this._pinNoteUnsent(gone.pin.note, gone.pin.signature); }
+			// It was counted as a turn when it was sent; it never became one.
+			if (this._chat.stats.turns > 0) { this._chat.stats.turns--; }
+			// A tool result seen after the withdrawn (oldest) message was sent is not a boundary for the next one,
+			// which may have been sent after it: that one is placed at its own turn's start instead.
+			if (at === 0) { this._boundary = false; }
+		} else if (!withdrawn && at >= 0 && this._session === session) {
+			this._chat.entries.push({ kind: 'notice', text: vscode.l10n.t("The agent has already taken that message in, so it could not be withdrawn.") });
+		}
+		this._post();
 	}
 
 	/** How many messages are queued: closing the tab drops them, so the close asks. */
@@ -1233,6 +1283,8 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 			this._pending = [pending];
 			this._flushWaiting();
 		}
+		// The id a message waiting to be taken in is sent with, so its × can withdraw it.
+		let waitingId: string | undefined;
 		if (running && (agent === 'claude' || agent === 'gemini' || agent === 'openrouter' || agent === 'opencode')) {
 			// Taken into the running turn, or answered by a turn of its own right
 			// after it — Claude Code decides, and says which only by doing it (see
@@ -1246,7 +1298,8 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 			if (!this._waiting.length) {
 				this._boundary = false;
 			}
-			this._waiting.push({ id: generateUuid(), entry, pending });
+			waitingId = generateUuid();
+			this._waiting.push({ id: waitingId, entry, pending });
 			this._post();
 		} else {
 			if (running) {
@@ -1261,6 +1314,8 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 		const sent = asked ? withNextDecision(said, asked) : said;
 		const pinNote = this._takePinNote();
 		const signatureSent = this._pinAnnounced;
+		const waitingRecord = waitingId ? this._waiting.find(w => w.id === waitingId) : undefined;
+		if (waitingRecord) { waitingRecord.pin = { note: pinNote, signature: signatureSent }; }
 		const prompt = [sent, pinNote, this._host.pinnedBrowserContext?.(this), this._host.linkedChatContext?.(this._chat.id), attachmentContext(context), visualizationInstruction].filter(Boolean).join('\n\n');
 		const images = attachments.map(a => a.image).filter((i): i is TurnImage => !!i);
 		pending.resend = { input: { text: prompt, images, ...(agent === 'claude' ? { ultracode } : {}) }, model, effort };
@@ -1274,7 +1329,9 @@ Rich chat tools: chat_notify({id?,text,level?:"info"|"warning"|"error",reason?,r
 			// A session that gave the message up on the way — disposed, or stopped
 			// before any turn began — resolves without throwing; only `true` means
 			// an agent has it (what deleting the sent annotations waits for).
-			delivered = await session.send(pending.resend.input, model, effort);
+			// The waiting message goes with its own id (Claude Code's `uuid`), which
+			// is what `withdraw` names; a resend later is a new message and has none.
+			delivered = await session.send(waitingId && session.withdraw ? { ...pending.resend.input, uuid: waitingId } : pending.resend.input, model, effort);
 		} catch (err) {
 			delivered = false;
 			// The agent never saw the note: the next message carries it again.

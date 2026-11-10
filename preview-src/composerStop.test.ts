@@ -10,13 +10,13 @@ const lift = (name: string) => new RegExp(`function ${name}\\([\\s\\S]*?\\n\\}`)
 function fixture() {
 	const classes = new Set<string>();
 	const attributes = new Map<string, string>();
-	const sendButton = { disabled: false, title: '', classList: { toggle(name: string, on: boolean) { on ? classes.add(name) : classes.delete(name); } }, setAttribute(name: string, value: string) { attributes.set(name, value); } };
+	const sendButton = { disabled: false, title: '', classList: { toggle(name: string, on: boolean) { on ? classes.add(name) : classes.delete(name); }, contains: (name: string) => classes.has(name) }, setAttribute(name: string, value: string) { attributes.set(name, value); } };
 	const state = { running: true, turnsEnded: 3 as number | undefined, activeTab: 'a' as string | undefined, attachments: [] as any[], access: { tabs: [{ id: 'browser', owner: 'this' }] } };
 	const input = { value: '' };
 	const sendOptionsButton = { disabled: false };
 	const posted: any[] = [];
 	const { render, requestStop } = runInNewContext(transpileModule(['let stopRequested;', lift('renderSend'), lift('requestStop')].join('\n'), {}).outputText + '\n({ render: renderSend, requestStop });', {
-		state, input, sendButton, sendOptionsButton, navigator: { platform: 'Mac' }, canSend: () => true, refreshSendMenu() {},
+		state, input, sendButton, sendOptionsButton, navigator: { platform: 'Mac' }, canSend: () => true, refreshSendMenu() {}, renderPaste: () => false,
 		setIcon() {}, isPinChip: (chip: any) => chip.kind === 'terminal' && chip.pinned === true,
 		post: (message: unknown) => posted.push(message),
 	});
@@ -122,7 +122,7 @@ test('tapping the explicit send-options button opens queue choices without stopp
 	f.input.value = 'Follow up';
 	const handlers = new Map<string, () => void>();
 	const options = { setAttribute() {}, addEventListener: (type: string, fn: () => void) => handlers.set(type, fn) };
-	const main = { disabled: false, setAttribute() {} };
+	const main = { disabled: false, setAttribute() {}, classList: { contains: () => false } };
 	let open = false;
 	let items: any[] = [];
 	const menu = { classList: { contains: () => open } };

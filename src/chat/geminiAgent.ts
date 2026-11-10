@@ -695,6 +695,21 @@ class GeminiSession implements AgentSession {
 		});
 	}
 
+	/**
+	 * A message held here for after the running turn, taken back: it never went
+	 * to Gemini CLI, so dropping it from the queue is the whole withdrawal. One the
+	 * turn has already sent is not here, and answers `false`.
+	 */
+	public withdraw(uuid: string): Promise<boolean> {
+		const at = this._queue.findIndex(q => q.input.uuid === uuid);
+		if (at < 0) {
+			return Promise.resolve(false);
+		}
+		const [queued] = this._queue.splice(at, 1);
+		queued.resolve(false);
+		return Promise.resolve(true);
+	}
+
 	public stop(): void {
 		if (!this._running) {
 			return;
