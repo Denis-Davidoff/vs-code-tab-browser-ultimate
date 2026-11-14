@@ -1,8 +1,4 @@
-import { setVisibleTurns } from './chat/core/entryWindow';
-import { visibleTurns } from './chat/visibleTurns';
 import { configureTemporaryFiles } from './core/temporaryFiles';
-import { registerChromeChat } from './chat/chromeChatSetup';
-import { registerExchangeChat } from './chat/exchangeChat';
 import { privateTempDirectory } from './core/safeFiles';
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
@@ -22,10 +18,9 @@ import { localHosts, normalizeAddress } from './core/webUrl';
 import { BrowserController } from './browser/browserController';
 import { BrowserRecording, recordingErrorReported } from './browser/recording';
 import { recordingQualityKey, readRecordingQuality } from './browser/recordingQuality';
-import { ChatViewProvider, chatBlocked, chatBlockedContextKey, chatUnsupportedContextKey, chatViewId, supportsSecondarySidebar } from './chat/chatView';
+import { RecorderViewProvider, recorderViewId } from './browser/recorderView';
 import { McpLifecycle } from './mcp/mcpLifecycle';
-import { ChatControlPort } from './mcp/chatTools';
-import { chatConnectionPrompt, connectClaudeCode, connectCodex, connectGemini, connectOpenCode, connectOtherAgent, openGeminiHere, type SharedPage } from './mcp/mcpSetup';
+import { connectClaudeCode, connectCodex, connectGemini, connectOpenCode, connectOtherAgent, openGeminiHere, type SharedPage } from './mcp/mcpSetup';
 import { everyone, forKind, isShareTarget, targetName, type ShareTarget } from './browser/shareRegistry';
 import { checkConnection } from './mcp/mcpCheck';
 import { copyScreenshot } from './browser/screenshot';
@@ -75,7 +70,7 @@ const stopSharingTabCommand = 'aiBrowser.stopSharingTab';
 const shareWithClaudeCommand = 'aiBrowser.shareTabWithClaudeCode';
 const shareWithCodexCommand = 'aiBrowser.shareTabWithCodex';
 const shareWithGeminiCommand = 'aiBrowser.shareTabWithGemini';
-const shareWithOtherAgentCommands = { opencode: 'aiBrowser.shareTabWithOpenCode', pi: 'aiBrowser.shareTabWithPi', openrouter: 'aiBrowser.shareTabWithOpenRouter' } as const;
+const shareWithOtherAgentCommands = { opencode: 'aiBrowser.shareTabWithOpenCode' } as const;
 
 const openerId = 'aiBrowser.open';
 
@@ -100,11 +95,6 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const manager = new AIBrowserManager(context.extensionUri);
 	context.subscriptions.push(manager);
-	// How many turns each chat view is sent at first (`aiBrowser.chat.visibleTurns`), for the bridges that cannot read settings.
-	setVisibleTurns(visibleTurns());
-	context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
-		if (e.affectsConfiguration('aiBrowser.chat.visibleTurns')) { setVisibleTurns(visibleTurns()); }
-	}));
 
 	context.subscriptions.push(vscode.window.registerWebviewPanelSerializer(AIBrowserView.viewType, {
 		deserializeWebviewPanel: async (panel, state) => {
@@ -242,16 +232,8 @@ export function activate(context: vscode.ExtensionContext) {
 	// The toolbar's primary button repeats whichever of these ran last, so every
 	// one of them records itself.
 	const lastAction = new LastElementAction(context.globalState);
-	// `chat`: the AI Browser chat's Add button falls back to its Copy twin
-	// wherever the chat cannot run — below VS Code 1.106, in Restricted Mode, in
-	// a remote window — as an assistant's does when it cannot be handed to.
-	lastAction.initialize(destination => destination === 'chat' ? chatBlocked() === undefined : canHandOver(destination as AssistantId));
-	const publishChatBlocked = () => vscode.commands.executeCommand('setContext', chatBlockedContextKey, chatBlocked() !== undefined);
-	void publishChatBlocked();
-	context.subscriptions.push(vscode.workspace.onDidGrantWorkspaceTrust(() => {
-		void publishChatBlocked();
-		void lastAction.refresh();
-	}));
+	lastAction.initialize(destination => canHandOver(destination as AssistantId));
+	context.subscriptions.push(vscode.workspace.onDidGrantWorkspaceTrust(() => void lastAction.refresh()));
 	context.subscriptions.push(vscode.extensions.onDidChange(() => lastAction.refresh()));
 
 	const registerElementCommand = (id: string, remembered: ElementActionId, run: () => Promise<void>, repeat = false) =>
@@ -268,30 +250,22 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// "Open Google Chrome for your agent" in the status bar menu: a Chrome tab
 	// opened, and a prompt naming it by our tab id on the clipboard. Every agent
-	// the extension supports: the three with a terminal Connect, OpenCode (whose
-	// Connect opens a terminal with the tools), and the two that live only in
-	// the AI Browser chat (Pi, OpenRouter), for which a chat with that agent is
-	// opened to paste into. Not in `contributes.commands`: only the menu runs it,
-	// like `cancelElementPick`.
-	const assistantNames = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI', opencode: 'OpenCode', pi: 'Pi', openrouter: 'OpenRouter' } as const;
+	// the extension supports: the three with a terminal Connect, and OpenCode
+	// (whose Connect opens a terminal with the tools). Not in
+	// `contributes.commands`: only the menu runs it, like `cancelElementPick`.
+	const assistantNames = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini CLI', opencode: 'OpenCode' } as const;
 	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.openChromeForAssistant', async (who?: unknown) => {
 		if (typeof who !== 'string' || !Object.prototype.hasOwnProperty.call(assistantNames, who)) {
 			return;
 		}
 		const agent = who as keyof typeof assistantNames;
-		const inChat = agent === 'pi' || agent === 'openrouter';
-		if (inChat && !supportsSecondarySidebar(vscode.version)) {
-			return;
-		}
 		const tab = await vscode.commands.executeCommand<vscode.BrowserTab | undefined>('aiBrowser.openInChrome');
 		if (!tab) {
 			return;
 		}
 		const name = assistantNames[agent];
 		const tabId = browser.tabIdOf(tab);
-		const missing = inChat
-			? 'If you have no ai-browser tools, tell me the AI Browser MCP server is off (setting aiBrowser.mcp.enabled). Do not add or edit any MCP configuration yourself.'
-			: agent === 'opencode'
+		const missing = agent === 'opencode'
 				? 'If you have no ai-browser tools, tell me to run "Connect your agent" → OpenCode from the AI Browser status bar menu, which opens an OpenCode terminal with them. Do not add or edit any MCP configuration yourself.'
 				: `If you have no ai-browser tools, tell me to run "AI Browser: Connect ${name}" and restart your session. Do not add or edit any MCP configuration yourself.`;
 		await vscode.env.clipboard.writeText([
@@ -301,16 +275,9 @@ export function activate(context: vscode.ExtensionContext) {
 			missing,
 			'Then wait for my request.',
 		].join('\n'));
-		if (inChat) {
-			// The agent lives in the AI Browser chat only: open a chat with it to paste into.
-			await vscode.commands.executeCommand(`${chatViewId}.focus`);
-			await chat.newChat('here', agent);
-		}
 		// Modal, like the paste prompt after Connect: the paste is the one step left.
 		await vscode.window.showInformationMessage(
-			inChat
-				? vscode.l10n.t('Paste into the AI Browser chat with {0} that just opened; it works in the new Chrome tab.', name)
-				: vscode.l10n.t('Paste into the {0} chat; it works in the Chrome tab that just opened.', name),
+			vscode.l10n.t('Paste into the {0} chat; it works in the Chrome tab that just opened.', name),
 			{ modal: true, detail: vscode.l10n.t('The prompt is on your clipboard.') });
 	}));
 	// The user's own recording commands. A failure the recording reported itself
@@ -363,9 +330,14 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	}
 
-	// The chat is created further down; its `chat_*` tools find it through this.
-	const chatPort = new ChatControlPort();
-	const mcp = new McpLifecycle(context, browser, context.extension.packageJSON.version ?? '0.0.0', recording, chatPort);
+	// The encoder of browser recordings: a small webview in the panel area.
+	const recorder = new RecorderViewProvider(context.extensionUri);
+	context.subscriptions.push(recorder, vscode.window.registerWebviewViewProvider(recorderViewId, recorder, {
+		webviewOptions: { retainContextWhenHidden: true },
+	}));
+	recording.createEncoder = id => recorder.createEncoder(id);
+	configureTemporaryFiles(() => privateTempDirectory('inventory'), () => vscode.workspace.workspaceFolders?.find(f => f.uri.scheme === 'file')?.uri.fsPath);
+	const mcp = new McpLifecycle(context, browser, context.extension.packageJSON.version ?? '0.0.0', recording);
 	context.subscriptions.push(mcp);
 	mcp.apply();
 
@@ -682,7 +654,7 @@ export function activate(context: vscode.ExtensionContext) {
 				+ 'If the tools refuse the tab or are missing, tell me and stop.');
 			// Modal, like the recording prompt: a toast would pause the page (#10).
 			await vscode.window.showInformationMessage(
-				vscode.l10n.t('Paste into Claude Code, Codex, Gemini CLI, OpenCode or the AI Browser chat to work through the annotations.'),
+				vscode.l10n.t('Paste into Claude Code, Codex, Gemini CLI or OpenCode to work through the annotations.'),
 				{ modal: true, detail: vscode.l10n.t('The prompt is on your clipboard.') });
 		} catch (error) { refuse(error instanceof Error ? error.message : String(error)); }
 	})));
@@ -703,114 +675,6 @@ export function activate(context: vscode.ExtensionContext) {
 	// it holds CDP sessions of its own, and nothing an assistant can call
 	// reaches the vault.
 	registerLogins(context);
-
-	// The AI Browser chat, beside Claude Code's and Codex's own. No CLI starts
-	// until the view is first shown: detection runs when its webview says it is
-	// ready, and a conversation's process when its first message is sent.
-	// The agents get this window's MCP server whether or not Connect wrote a
-	// config: the chat is for working with the browser. Read at every start of
-	// a CLI, since the port moves with a setting change; nothing while it is not
-	// running.
-	const chat = new ChatViewProvider(context, browser, () => {
-		const state = mcp.state;
-		const url = state.kind === 'running' ? state.server.url : undefined;
-		return state.kind === 'running' && url ? { url, token: state.server.token } : undefined;
-	}, recording);
-	if (!supportsSecondarySidebar(vscode.version)) {
-		void vscode.commands.executeCommand('setContext', chatUnsupportedContextKey, true);
-	}
-	context.subscriptions.push(chat, vscode.window.registerWebviewViewProvider(chatViewId, chat, {
-		webviewOptions: { retainContextWhenHidden: true },
-	}));
-	context.subscriptions.push(vscode.window.registerWebviewPanelSerializer('aiBrowser.chat.window', {
-		deserializeWebviewPanel: async (panel, state) => { chat.restoreChatPanel(panel, state); },
-	}));
-	configureTemporaryFiles(() => privateTempDirectory('inventory'), () => chat.temporaryProject);
-	registerChromeChat(context);
-	registerExchangeChat(context, browser);
-	chatPort.target = ChatViewProvider.mcpControl();
-	recording.destination = chatId => chat.recordingDestination(chatId);
-	recording.project = chatId => chat.recordingProject(chatId);
-	recording.createEncoder = id => chat.createRecordingEncoder(id);
-	context.subscriptions.push(vscode.commands.registerCommand('aiBrowser.recording.startChat', userRecording(async () => {
-		await vscode.commands.executeCommand(`${chatViewId}.focus`);
-		return recording.start(undefined, 'chat');
-	})));
-	// The element entries of "AI Browser Chat ▸" are toolbar actions like the
-	// assistants' Add entries: each records itself, and has a `repeat.chat.*`
-	// twin for the primary button and the chord.
-	const chatAdds: [ElementActionId, 'element' | 'cssPath' | 'cssLocation' | 'xpath'][] = [
-		['chat:element', 'element'], ['chat:cssPath', 'cssPath'], ['chat:cssLocation', 'cssLocation'], ['chat:xpath', 'xpath'],
-	];
-	for (const [action, what] of chatAdds) {
-		const command = `aiBrowser.chat.add${{ element: 'Element', cssPath: 'CssPath', cssLocation: 'CssLocation', xpath: 'XPath' }[what]}`;
-		registerElementCommand(command, action, () => chat.addFromBrowser(what));
-		registerElementCommand(`aiBrowser.repeat.${action.replace(':', '.')}`, action, () => chat.addFromBrowser(what));
-	}
-	const revealChat = () => vscode.commands.executeCommand(`${chatViewId}.focus`);
-	context.subscriptions.push(
-		// A location comes from the status bar menu; the title bar passes none and
-		// asks. "Here" is a tab of the side bar's chat, so the view is revealed
-		// first — a new tab in a hidden view looks like nothing happened. A tab or
-		// a window is an editor of its own and leaves the side bar as it is.
-		vscode.commands.registerCommand('aiBrowser.chat.newChat', async (location?: unknown) => {
-			const where = location === 'here' || location === 'tab' || location === 'window' ? location : undefined;
-			if (where !== 'tab' && where !== 'window') { await revealChat(); }
-			await chat.newChat(where);
-		}),
-		vscode.commands.registerCommand('aiBrowser.connectChatAgent', async (agent?: unknown) => {
-			if (agent !== 'pi' && agent !== 'openrouter') { return; }
-			await mcp.withServer(async () => {
-				const shared = await giveFocusedTab(forKind(agent));
-				const name = agent === 'pi' ? 'Pi' : 'OpenRouter';
-				await vscode.env.clipboard.writeText(chatConnectionPrompt(name, shared));
-				await revealChat();
-				await chat.newChat('here', agent);
-				confirm(vscode.l10n.t("{0} chat opened. Paste the copied prompt to check its browser tools.", name));
-			});
-		}),
-		// A shell in a tab of the chat view, in the folder of the conversation in
-		// front. The view is revealed first, so the tab shows where the user looks.
-		// `agent` starts that agent's own CLI instead; anything else is a shell.
-		vscode.commands.registerCommand('aiBrowser.chat.newTerminal', async (agent?: unknown) => {
-			await revealChat();
-			await chat.newTerminal(agent === 'claude' || agent === 'codex' || agent === 'gemini' || agent === 'opencode' || agent === 'pi' ? agent : undefined);
-		}),
-		vscode.commands.registerCommand('aiBrowser.chat.settings', async () => {
-			await revealChat();
-			chat.showSettings();
-		}),
-		// Cmd/Ctrl+W bound only while focus is in a chat webview: closes the chat tab, not the editor.
-		vscode.commands.registerCommand('aiBrowser.chat.closeTab', () => ChatViewProvider.closeFocusedTab()),
-		vscode.commands.registerCommand('aiBrowser.chat.allAgents', async () => {
-			await revealChat();
-			chat.showAllAgents();
-		}),
-		vscode.commands.registerCommand('aiBrowser.chat.history', async () => {
-			await revealChat();
-			chat.showHistory();
-		}),
-		// Revealed first, so the agents' CLIs still start only with the chat open.
-		vscode.commands.registerCommand('aiBrowser.chat.refreshAgents', async () => {
-			await revealChat();
-			chat.refreshAgents();
-		}),
-		// Two commands for one button: a title bar icon is static, so the
-		// filled cup is a second command swapped in by a context key.
-		...['aiBrowser.chat.keepAwake', 'aiBrowser.chat.keepAwakeActive'].map(id => vscode.commands.registerCommand(id, async () => {
-			await revealChat();
-			chat.showKeepAwake();
-		})),
-		// The browser tab menu's "AI Browser Chat ▸": the chat is revealed after
-		// the pick, not before, so the page stays where the click is wanted.
-		vscode.commands.registerCommand('aiBrowser.chat.addScreenshot', () => chat.addFromBrowser('screenshot')),
-		vscode.commands.registerCommand('aiBrowser.chat.addPage', () => chat.addFromBrowser('page')),
-		vscode.commands.registerCommand('aiBrowser.chat.attachExplorerResources', async (resource?: vscode.Uri, selected?: readonly vscode.Uri[]) => {
-			const resources = selected?.length ? selected : resource ? [resource] : [];
-			await chat.attachExplorerResources(resources);
-		}),
-		vscode.commands.registerCommand('aiBrowser.chat.attachEditorSelection', () => chat.attachEditorSelection(vscode.window.activeTextEditor)),
-	);
 
 }
 

@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 
 /**
  * Every action the toolbar button can repeat: the four copies, and the same
- * four for each assistant and for the AI Browser chat, and Add Annotation
+ * four for each assistant, and Add Annotation
  * Marker. The value is compared
  * verbatim in `when` clauses, so these strings are part of the manifest's
  * contract.
@@ -16,14 +16,12 @@ export type ElementActionId =
 	| 'element' | 'cssPath' | 'cssLocation' | 'xpath'
 	| 'claude:element' | 'claude:cssPath' | 'claude:cssLocation' | 'claude:xpath'
 	| 'codex:element' | 'codex:cssPath' | 'codex:cssLocation' | 'codex:xpath'
-	| 'chat:element' | 'chat:cssPath' | 'chat:cssLocation' | 'chat:xpath'
 	| 'annotate' | 'annotateAnywhere';
 
 const allActions: readonly string[] = [
 	'element', 'cssPath', 'cssLocation', 'xpath',
 	'claude:element', 'claude:cssPath', 'claude:cssLocation', 'claude:xpath',
 	'codex:element', 'codex:cssPath', 'codex:cssLocation', 'codex:xpath',
-	'chat:element', 'chat:cssPath', 'chat:cssLocation', 'chat:xpath',
 	'annotate', 'annotateAnywhere',
 ];
 

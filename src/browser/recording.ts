@@ -21,8 +21,7 @@ export interface RecordingResult {
 	bytes: number;
 	mimeType?: string;
 	file?: string;
-	attachedToChat?: boolean;
-	delivery: 'chat' | 'clipboard';
+	delivery: 'clipboard';
 	clipboardCopied?: boolean;
 	/** Set when the recording was stopped by one of its limits rather than by a stop. */
 	limitReached?: 'duration' | 'size';
@@ -67,9 +66,6 @@ function markReported(error: unknown): void {
 	if (typeof error === 'object' && error !== null) { reportedErrors.add(error); }
 }
 
-/** A destination captured at start, never whichever chat happens to be active at stop. */
-export type RecordingDestination = (result: RecordingResult, file: vscode.Uri) => boolean;
-
 export interface RecordingEncoder {
 	readonly webview: Pick<vscode.Webview, 'postMessage' | 'onDidReceiveMessage'>;
 	readonly onDidDispose: vscode.Event<void>;
@@ -86,7 +82,6 @@ interface Run {
 	session?: string;
 	fd?: number;
 	file?: string;
-	attach?: RecordingDestination;
 	parts: vscode.Disposable[];
 	pending: Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>;
 	next: number;
@@ -129,27 +124,23 @@ export class BrowserRecording implements vscode.Disposable {
 	public readonly onDidChange = this._changed.event;
 	public get current(): RecordingResult | undefined { return this._active ? this._snapshot(this._active) : undefined; }
 	public createEncoder: ((id: string) => RecordingEncoder) | undefined;
-	public destination: ((chatId?: string) => RecordingDestination | undefined) | undefined;
-	public project: ((chatId: string) => string | undefined) | undefined;
 
 	constructor(private readonly _context: vscode.ExtensionContext, private readonly _browser: BrowserController) { this._publish(); }
 
-	public async start(caller?: CallerIdentity, delivery: 'chat' | 'clipboard' = 'clipboard', signal?: AbortSignal, quality?: RecordingQuality): Promise<RecordingResult> {
+	public async start(caller?: CallerIdentity, delivery: 'clipboard' = 'clipboard', signal?: AbortSignal, quality?: RecordingQuality): Promise<RecordingResult> {
 		if (signal?.aborted) { throw new Error('Recording startup was cancelled.'); }
 		if (this._disposed) { throw new Error('Recording is unavailable.'); }
 		if (this._active) { throw new Error('A recording is already in progress. Stop it first.'); }
 		const tab = this._browser.recordingTab(caller);
-		const attach = delivery === 'chat' ? this.destination?.(caller?.chatId) : undefined;
-		if (delivery === 'chat' && !attach) { throw new Error('Open an AI Browser Chat before recording to the chat.'); }
 		const result: RecordingResult = { id: generateUuid(), state: 'starting', delivery, tabId: this._browser.tabIdOf(tab), url: tab.url, durationSeconds: 0, frames: 0, bytes: 0 };
 		if (!this.createEncoder) { throw new Error('The background video encoder is unavailable.'); }
 		const panel = this.createEncoder(result.id);
-		const project = caller?.chatId ? this.project?.(caller.chatId) : temporaryProject();
+		const project = temporaryProject();
 		const profile = recordingProfiles[readRecordingQuality(quality ?? this._context.globalState?.get(recordingQualityKey))];
 		const maxSeconds = readRecordingSeconds(this._context.globalState?.get(recordingSecondsKey));
 		const maxBytes = recordingByteLimit(maxSeconds, profile.bitrate);
 		result.maxSeconds = maxSeconds;
-		const run: Run = { result, caller: caller ? { ...caller } : undefined, tab, panel, profile, parts: [], pending: new Map(), next: 0, elapsed: 0, busyFrame: false, largestChunk: 0, attach, maxSeconds, maxBytes };
+		const run: Run = { result, caller: caller ? { ...caller } : undefined, tab, panel, profile, parts: [], pending: new Map(), next: 0, elapsed: 0, busyFrame: false, largestChunk: 0, maxSeconds, maxBytes };
 		this._active = run;
 		let rejectStartup!: (error: Error) => void;
 		const cancelled = new Promise<never>((_, reject) => { rejectStartup = reject; });
@@ -353,23 +344,18 @@ export class BrowserRecording implements vscode.Disposable {
 				run.result.durationSeconds = Math.min(run.result.durationSeconds, run.cutAtSeconds);
 				run.result.limitReached ??= 'size';
 			}
-			try { run.result.attachedToChat = run.attach?.({ ...run.result }, vscode.Uri.file(run.file)) ?? false; }
-			catch { run.result.attachedToChat = false; }
-			if (!run.result.attachedToChat) {
-				try { await vscode.env.clipboard.writeText(run.file); run.result.clipboardCopied = true; }
-				catch { run.result.clipboardCopied = false; }
-			}
+			try { await vscode.env.clipboard.writeText(run.file); run.result.clipboardCopied = true; }
+			catch { run.result.clipboardCopied = false; }
 			this._release(run);
 			const limit = run.result.limitReached === 'size' ? vscode.l10n.t(' Stopped at the {0} MB limit; the video so far is kept.', Math.round(run.maxBytes / 1024 / 1024))
 				: run.result.limitReached === 'duration' ? vscode.l10n.t(' Stopped at the {0} limit; the video so far is kept.', formatRecordingSeconds(run.maxSeconds)) : '';
 			const summary = vscode.l10n.t('Video recorded: {0} · {1}s · {2} MB.',
 				path.basename(run.file), run.result.durationSeconds.toFixed(1), (run.result.bytes / 1024 / 1024).toFixed(1)) + limit;
-			if (run.result.attachedToChat || run.result.clipboardCopied) {
+			if (run.result.clipboardCopied) {
 				// A confirmation, so the status bar: a toast here lands on the very page
 				// that was just recorded and pauses it (breaks-silently #10). The video
-				// is reachable from what was delivered — the chat chip opens it, and
-				// the path is on the clipboard.
-				confirm(summary + ' ' + (run.result.attachedToChat ? vscode.l10n.t('Attached to the chat draft.') : vscode.l10n.t('File path copied to clipboard.')));
+				// is reachable from what was delivered: the path is on the clipboard.
+				confirm(summary + ' ' + vscode.l10n.t('File path copied to clipboard.'));
 			} else {
 				// The one fallback: nothing could deliver the video, so these buttons
 				// are the only way to it. A notification for what did not happen is

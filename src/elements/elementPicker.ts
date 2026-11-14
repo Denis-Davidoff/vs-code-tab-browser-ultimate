@@ -903,58 +903,7 @@ export function copyElement(): Promise<void> {
 	);
 }
 
-/**
- * Picks an element on `tab` and answers its full context as Markdown — the
- * same text Copy Element puts on the clipboard — for the chat view's "+" menu.
- * `undefined` when the pick was cancelled or failed; a failure has already been
- * reported by then.
- */
-export async function pickElementContext(tab: vscode.BrowserTab): Promise<string | undefined> {
-	let markdown: string | undefined;
-	// The page is named: the tab need not be the focused one, and the choice is
-	// stated before anything happens (#259's condition for using `userTab`).
-	const title = plainInLabel(tab.title.replace(` (${tab.url})`, '').trim(), 60);
-	await pickAndDeliver(
-		title
-			? vscode.l10n.t("Click an element in \"{0}\" to attach it to the chat", title)
-			: vscode.l10n.t("Click an element in the browser to attach it to the chat"),
-		async (client, sessionId, backendNodeId, picked) =>
-			renderElementMarkdown(await extractElementData(client, sessionId, backendNodeId), picked.url),
-		async value => { markdown = value; },
-		tab,
-	);
-	return markdown;
-}
-
-/**
- * Picks an element on `tab` for the AI Browser chat — the browser tab menu's
- * "AI Browser Chat ▸" path entries: one of its paths, as the same report the
- * assistants' Add entries hand over. (Its full context goes through
- * `pickElementContext`, as the chat's own "+" does.) Answers the report and a
- * short descriptor for the chip; `undefined` when the pick was cancelled or
- * refused, which has been said by then.
- */
-export async function pickForChat(tab: vscode.BrowserTab, kind: PathKind): Promise<{ text: string; descriptor: string } | undefined> {
-	let picked: { text: string; descriptor: string } | undefined;
-	const title = plainInLabel(tab.title.replace(` (${tab.url})`, '').trim(), 60);
-	const what = kind === 'css' ? vscode.l10n.t("its CSS path")
-		: kind === 'cssLocation' ? vscode.l10n.t("its CSS path and page address")
-			: vscode.l10n.t("its XPath");
-	await pickAndDeliver(
-		title
-			? vscode.l10n.t("Click an element in \"{0}\" to attach {1} to the chat", title, what)
-			: vscode.l10n.t("Click an element in the browser to attach {0} to the chat", what),
-		async (client, sessionId, backendNodeId, tab) => {
-			const built = await pathReportOf(client, sessionId, backendNodeId, tab, kind);
-			return built ? { text: built.report, descriptor: built.descriptor } : undefined;
-		},
-		async value => { picked = value; },
-		tab,
-	);
-	return picked;
-}
-
-/* ------------------------------------------------ handing a report to a chat */
+/* ------------------------------------------------ handing a report to an assistant */
 
 /**
  * Delivers a report, falling back to the clipboard on every refusal.

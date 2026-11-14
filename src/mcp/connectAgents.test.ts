@@ -9,10 +9,9 @@ function fixture(version: string, installed = true, folder: { uri: { scheme: str
 	const source = readFileSync('src/mcp/mcpSetup.ts', 'utf8');
 	const command = /export async function connectOpenCode\([\s\S]*?\n\}/.exec(source)![0];
 	const prompt = /export function connectionPrompt\([\s\S]*?\n\}/.exec(source)![0];
-	const chatPrompt = /export function chatConnectionPrompt\([\s\S]*?\n\}/.exec(source)![0];
 	const exports: any = {};
 	const calls: { terminal?: any; clipboard?: string; shown?: boolean; refusal?: string } = {};
-	runInNewContext(transpileModule(`${command}\n${prompt}\n${chatPrompt}`, {
+	runInNewContext(transpileModule(`${command}\n${prompt}`, {
 		compilerOptions: { module: ModuleKind.CommonJS, target: ScriptTarget.ES2022 },
 	}).outputText, {
 		exports, serverName: 'ai-browser', plainInPrompt: (text: string) => text,
@@ -59,16 +58,4 @@ test('missing OpenCode reports installation needed without opening a shell', asy
 	await api.connectOpenCode({ url: 'http://localhost/mcp', token: 'private-token' });
 	assert.match(calls.refusal!, /Install OpenCode/);
 	assert.equal(calls.terminal, undefined);
-});
-
-test('Pi and OpenRouter prompts use automatic chat tools and name the shared tab', () => {
-	const { api } = fixture('2.1.1');
-	for (const name of ['Pi', 'OpenRouter']) {
-		const prompt = api.chatConnectionPrompt(name, { title: 'Example page', url: 'https://example.com' });
-		assert.ok(prompt.includes(name));
-		assert.match(prompt, /provided automatically/);
-		assert.match(prompt, /browser_state/);
-		assert.match(prompt, /Example page/);
-		assert.match(prompt, /Do not add or edit any MCP configuration/);
-	}
 });

@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex + Gemini + OpenCode + Pi + OpenRouter",
 	"description": "Chat with browser, MCP for Chrome and embedded browser tab with AI capabilities, Claude, Codex, Gemini, OpenCode, Pi and OpenRouter integration (Qwen, LM Studio, Ollama, etc.)",
-	"version": "0.9.23",
+	"version": "0.10.0",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -159,7 +159,6 @@
 		"onOpenExternalUri:http",
 		"onOpenExternalUri:https",
 		"onWebviewPanel:aiBrowser.view",
-		"onWebviewPanel:aiBrowser.chat.window",
 		"onCommand:aiBrowser.copyElement",
 		"onCommand:aiBrowser.copyElementCssPath",
 		"onStartupFinished",
@@ -195,18 +194,12 @@
 		"onCommand:aiBrowser.shareTabWithCodex",
 		"onCommand:aiBrowser.shareTabWithGemini",
 		"onCommand:aiBrowser.shareTabWithOpenCode",
-		"onCommand:aiBrowser.shareTabWithPi",
-		"onCommand:aiBrowser.shareTabWithOpenRouter",
 		"onCommand:aiBrowser.copyElementCssLocation",
 		"onCommand:aiBrowser.addCssLocationToClaudeCode",
 		"onCommand:aiBrowser.addCssLocationToCodex",
 		"onCommand:aiBrowser.repeat.cssLocation",
 		"onCommand:aiBrowser.repeat.claude.cssLocation",
 		"onCommand:aiBrowser.repeat.codex.cssLocation",
-		"onCommand:aiBrowser.repeat.chat.element",
-		"onCommand:aiBrowser.repeat.chat.cssPath",
-		"onCommand:aiBrowser.repeat.chat.cssLocation",
-		"onCommand:aiBrowser.repeat.chat.xpath",
 		"onCommand:aiBrowser.logins.fill",
 		"onCommand:aiBrowser.logins.saveFromPage",
 		"onCommand:aiBrowser.logins.manage",
@@ -218,43 +211,21 @@
 		"onCommand:aiBrowser.repeat.annotateAnywhere",
 		"onCommand:aiBrowser.clearAnnotations",
 		"onCommand:aiBrowser.copyAnnotationPrompt",
-		"onView:aiBrowser.chat",
-		"onCommand:aiBrowser.chat.newChat",
-		"onCommand:aiBrowser.chat.newTerminal",
-		"onCommand:aiBrowser.chat.connectChrome",
-		"onCommand:aiBrowser.chat.connectExchange",
-		"onCommand:aiBrowser.chat.disconnectExchange",
-		"onCommand:aiBrowser.chat.disconnectChrome",
-		"onCommand:aiBrowser.chat.history",
-		"onCommand:aiBrowser.chat.refreshAgents",
-		"onCommand:aiBrowser.chat.allAgents",
-		"onCommand:aiBrowser.chat.closeTab",
-		"onCommand:aiBrowser.chat.keepAwake",
-		"onCommand:aiBrowser.chat.keepAwakeActive",
-		"onCommand:aiBrowser.chat.addElement",
-		"onCommand:aiBrowser.chat.addCssPath",
-		"onCommand:aiBrowser.chat.addCssLocation",
-		"onCommand:aiBrowser.chat.addXPath",
-		"onCommand:aiBrowser.chat.addScreenshot",
-		"onCommand:aiBrowser.chat.addPage",
-		"onCommand:aiBrowser.chat.attachExplorerResources",
-		"onCommand:aiBrowser.chat.attachEditorSelection",
 		"onCommand:aiBrowser.recording.start",
-		"onCommand:aiBrowser.recording.startChat",
 		"onCommand:aiBrowser.recording.startClaude",
 		"onCommand:aiBrowser.recording.startCodex",
 		"onCommand:aiBrowser.recording.pause",
 		"onCommand:aiBrowser.recording.resume",
 		"onCommand:aiBrowser.recording.stop",
 		"onCommand:aiBrowser.recording.stopEnding",
-		"onCommand:aiBrowser.chat.settings",
 		"onCommand:aiBrowser.recording.balanced",
 		"onCommand:aiBrowser.recording.balancedDefault",
 		"onCommand:aiBrowser.recording.high",
 		"onCommand:aiBrowser.recording.highDefault",
 		"onCommand:aiBrowser.recording.maximum",
 		"onCommand:aiBrowser.recording.maximumDefault",
-		"onCommand:aiBrowser.connectOtherAgent"
+		"onCommand:aiBrowser.connectOtherAgent",
+		"onView:aiBrowser.recorder"
 	],
 	"capabilities": {
 		"virtualWorkspaces": true,
@@ -265,16 +236,6 @@
 	},
 	"contributes": {
 		"commands": [
-			{
-				"command": "aiBrowser.chat.connectExchange",
-				"title": "Connect Chat to Exchange",
-				"category": "AI Browser"
-			},
-			{
-				"command": "aiBrowser.chat.disconnectExchange",
-				"title": "Disconnect Chat from Exchange",
-				"category": "AI Browser"
-			},
 			{
 				"command": "aiBrowser.show",
 				"title": "Show",
@@ -623,42 +584,6 @@
 				}
 			},
 			{
-				"command": "aiBrowser.repeat.chat.element",
-				"title": "%command.chat.addElement.title%",
-				"category": "%displayName%",
-				"icon": {
-					"light": "media/icons/crosshair-red-light.svg",
-					"dark": "media/icons/crosshair-red-dark.svg"
-				}
-			},
-			{
-				"command": "aiBrowser.repeat.chat.cssPath",
-				"title": "%command.chat.addCssPath.title%",
-				"category": "%displayName%",
-				"icon": {
-					"light": "media/icons/crosshair-blue-light.svg",
-					"dark": "media/icons/crosshair-blue-dark.svg"
-				}
-			},
-			{
-				"command": "aiBrowser.repeat.chat.cssLocation",
-				"title": "%command.chat.addCssLocation.title%",
-				"category": "%displayName%",
-				"icon": {
-					"light": "media/icons/crosshair-grape-light.svg",
-					"dark": "media/icons/crosshair-grape-dark.svg"
-				}
-			},
-			{
-				"command": "aiBrowser.repeat.chat.xpath",
-				"title": "%command.chat.addXPath.title%",
-				"category": "%displayName%",
-				"icon": {
-					"light": "media/icons/crosshair-green-light.svg",
-					"dark": "media/icons/crosshair-green-dark.svg"
-				}
-			},
-			{
 				"command": "aiBrowser.shareTab",
 				"title": "%command.shareTab.title%",
 				"category": "%displayName%"
@@ -686,16 +611,6 @@
 			{
 				"command": "aiBrowser.shareTabWithOpenCode",
 				"title": "%command.shareTabWithOpenCode.title%",
-				"category": "%displayName%"
-			},
-			{
-				"command": "aiBrowser.shareTabWithPi",
-				"title": "%command.shareTabWithPi.title%",
-				"category": "%displayName%"
-			},
-			{
-				"command": "aiBrowser.shareTabWithOpenRouter",
-				"title": "%command.shareTabWithOpenRouter.title%",
 				"category": "%displayName%"
 			},
 			{
@@ -729,136 +644,8 @@
 				"icon": "$(cloud-upload)"
 			},
 			{
-				"command": "aiBrowser.chat.addElement",
-				"title": "%command.chat.addElement.title%",
-				"category": "%displayName%",
-				"icon": {
-					"light": "media/icons/crosshair-red-light.svg",
-					"dark": "media/icons/crosshair-red-dark.svg"
-				}
-			},
-			{
-				"command": "aiBrowser.chat.addCssPath",
-				"title": "%command.chat.addCssPath.title%",
-				"category": "%displayName%",
-				"icon": {
-					"light": "media/icons/crosshair-blue-light.svg",
-					"dark": "media/icons/crosshair-blue-dark.svg"
-				}
-			},
-			{
-				"command": "aiBrowser.chat.addCssLocation",
-				"title": "%command.chat.addCssLocation.title%",
-				"category": "%displayName%",
-				"icon": {
-					"light": "media/icons/crosshair-grape-light.svg",
-					"dark": "media/icons/crosshair-grape-dark.svg"
-				}
-			},
-			{
-				"command": "aiBrowser.chat.addXPath",
-				"title": "%command.chat.addXPath.title%",
-				"category": "%displayName%",
-				"icon": {
-					"light": "media/icons/crosshair-green-light.svg",
-					"dark": "media/icons/crosshair-green-dark.svg"
-				}
-			},
-			{
-				"command": "aiBrowser.chat.addScreenshot",
-				"title": "%command.chat.addScreenshot.title%",
-				"category": "%displayName%"
-			},
-			{
-				"command": "aiBrowser.chat.addPage",
-				"title": "%command.chat.addPage.title%",
-				"category": "%displayName%"
-			},
-			{
-				"command": "aiBrowser.chat.attachExplorerResources",
-				"title": "%command.chat.attachExplorerResources.title%",
-				"category": "%displayName%",
-				"icon": "$(attach)"
-			},
-			{
-				"command": "aiBrowser.chat.attachEditorSelection",
-				"title": "%command.chat.attachEditorSelection.title%",
-				"category": "%displayName%",
-				"icon": "$(code)"
-			},
-			{
-				"command": "aiBrowser.chat.newChat",
-				"title": "%command.chat.newChat.title%",
-				"category": "%displayName%",
-				"icon": "$(add)"
-			},
-			{
-				"command": "aiBrowser.chat.newTerminal",
-				"title": "%command.chat.newTerminal.title%",
-				"category": "%displayName%",
-				"icon": "$(terminal)"
-			},
-			{
-				"command": "aiBrowser.chat.connectChrome",
-				"title": "Connect Chrome Chat (Preview)",
-				"category": "%displayName%"
-			},
-			{
-				"command": "aiBrowser.chat.disconnectChrome",
-				"title": "Disconnect Chrome Chat",
-				"category": "%displayName%"
-			},
-			{
-				"command": "aiBrowser.chat.history",
-				"title": "%command.chat.history.title%",
-				"category": "%displayName%",
-				"icon": "$(history)"
-			},
-			{
-				"command": "aiBrowser.chat.refreshAgents",
-				"title": "%command.chat.refreshAgents.title%",
-				"category": "%displayName%",
-				"icon": "$(refresh)"
-			},
-			{
-				"command": "aiBrowser.chat.settings",
-				"title": "%command.chat.settings.title%",
-				"category": "%displayName%",
-				"icon": "$(gear)"
-			},
-			{
-				"command": "aiBrowser.chat.closeTab",
-				"title": "%command.chat.closeTab.title%",
-				"category": "%displayName%"
-			},
-			{
-				"command": "aiBrowser.chat.allAgents",
-				"title": "%command.chat.allAgents.title%",
-				"category": "%displayName%",
-				"icon": "$(hubot)"
-			},
-			{
-				"command": "aiBrowser.chat.keepAwake",
-				"title": "%command.chat.keepAwake.title%",
-				"category": "%displayName%",
-				"icon": "$(ai-browser-cup)"
-			},
-			{
-				"command": "aiBrowser.chat.keepAwakeActive",
-				"title": "%command.chat.keepAwakeActive.title%",
-				"category": "%displayName%",
-				"icon": "$(ai-browser-cup-full)"
-			},
-			{
 				"command": "aiBrowser.recording.start",
 				"title": "%command.recording.start.title%",
-				"category": "%displayName%",
-				"icon": "$(device-camera-video)",
-				"enablement": "!aiBrowser.recordingActive"
-			},
-			{
-				"command": "aiBrowser.recording.startChat",
-				"title": "%command.recording.startChat.title%",
 				"category": "%displayName%",
 				"icon": "$(device-camera-video)",
 				"enablement": "!aiBrowser.recordingActive"
@@ -949,38 +736,21 @@
 				"icon": "$(plug)"
 			}
 		],
-		"icons": {
-			"ai-browser-cup": {
-				"description": "%icon.cup.description%",
-				"default": {
-					"fontPath": "media/ai-browser-icons.ttf",
-					"fontCharacter": "\\E001"
-				}
-			},
-			"ai-browser-cup-full": {
-				"description": "%icon.cupFull.description%",
-				"default": {
-					"fontPath": "media/ai-browser-icons.ttf",
-					"fontCharacter": "\\E002"
-				}
-			}
-		},
 		"viewsContainers": {
-			"secondarySidebar": [
+			"panel": [
 				{
-					"id": "aiBrowserChat",
-					"title": "%viewsContainer.chat.title%",
-					"icon": "media/chat-activity.svg"
+					"id": "aiBrowserRecorder",
+					"title": "%viewsContainer.recorder.title%",
+					"icon": "$(device-camera-video)"
 				}
 			]
 		},
 		"views": {
-			"aiBrowserChat": [
+			"aiBrowserRecorder": [
 				{
 					"type": "webview",
-					"id": "aiBrowser.chat",
-					"name": "%view.chat.name%",
-					"when": "!aiBrowser.chatUnsupported"
+					"id": "aiBrowser.recorder",
+					"name": "%view.recorder.name%"
 				}
 			]
 		},
@@ -1068,170 +838,6 @@
 						"title": "Passkeys",
 						"markdownDescription": "%configuration.passkeys.enabled.description%"
 					},
-					"aiBrowser.chat.connectionPermissions": {
-						"type": "object",
-						"default": {},
-						"scope": "application",
-						"title": "Connection Permissions",
-						"description": "Optional restrictions for Chrome and Exchange. Manage these in AI Browser Chat Settings → Connections & permissions. Supported actions are enabled unless explicitly disabled.",
-						"additionalProperties": false,
-						"properties": {
-							"chrome": { "type": "object", "additionalProperties": { "type": "boolean" } },
-							"exchange": { "type": "object", "additionalProperties": { "type": "boolean" } }
-						}
-					},
-					"aiBrowser.chat.tabLimit": {
-						"type": "integer",
-						"default": 10,
-						"minimum": 1,
-						"maximum": 30,
-						"title": "Chat Tabs",
-						"markdownDescription": "%configuration.chat.tabLimit.description%"
-					},
-					"aiBrowser.chat.terminalLimit": {
-						"type": "integer",
-						"default": 8,
-						"minimum": 1,
-						"maximum": 20,
-						"scope": "application",
-						"title": "Terminal Tabs",
-						"markdownDescription": "%configuration.chat.terminalLimit.description%"
-					},
-					"aiBrowser.chat.sound.enabled": {
-						"type": "boolean",
-						"default": true,
-						"title": "Sound When Agents Finish",
-						"markdownDescription": "%configuration.chat.sound.enabled.description%"
-					},
-					"aiBrowser.chat.sound.activeChat": {
-						"type": "boolean",
-						"default": false,
-						"title": "Sound for the Active Chat",
-						"markdownDescription": "%configuration.chat.sound.activeChat.description%"
-					},
-					"aiBrowser.chat.sound.name": {
-						"type": "string",
-						"enum": ["chime", "bell", "pop", "dingdong", "marimba", "harp", "kalimba", "glass", "bubble", "coin", "levelup", "sparkle", "sonar", "arcade", "droplet", "woodblock", "fanfare", "zen", "whistle", "synth", "lullaby", "triad", "ascend", "descend", "doorbell", "tick", "blip", "laser", "ufo", "boing", "piano", "celesta", "organ", "flute", "pluck", "gong", "twinkle", "heartbeat", "success", "notice", "trill", "jingle", "swoosh", "robot", "chirp", "harmony", "steel", "cosmic", "ping", "victory"],
-						"default": "chime",
-						"markdownDescription": "%configuration.chat.sound.name.description%"
-					},
-					"aiBrowser.chat.sound.githubRun": {
-						"type": "string",
-						"enum": ["none", "chime", "bell", "pop", "dingdong", "marimba", "harp", "kalimba", "glass", "bubble", "coin", "levelup", "sparkle", "sonar", "arcade", "droplet", "woodblock", "fanfare", "zen", "whistle", "synth", "lullaby", "triad", "ascend", "descend", "doorbell", "tick", "blip", "laser", "ufo", "boing", "piano", "celesta", "organ", "flute", "pluck", "gong", "twinkle", "heartbeat", "success", "notice", "trill", "jingle", "swoosh", "robot", "chirp", "harmony", "steel", "cosmic", "ping", "victory"],
-						"default": "success",
-						"title": "Sound When a Watched Actions Run Ends",
-						"markdownDescription": "%configuration.chat.sound.githubRun.description%"
-					},
-					"aiBrowser.chat.sound.volume": {
-						"type": "integer",
-						"minimum": 0,
-						"maximum": 200,
-						"default": 60,
-						"markdownDescription": "%configuration.chat.sound.volume.description%"
-					},
-					"aiBrowser.chat.sound.repeat": {
-						"type": "integer",
-						"minimum": 1,
-						"maximum": 5,
-						"default": 1,
-						"markdownDescription": "%configuration.chat.sound.repeat.description%"
-					},
-					"aiBrowser.chat.visibleTurns": {
-          "type": "integer",
-          "default": 20,
-          "minimum": 5,
-          "maximum": 200,
-          "markdownDescription": "%config.chat.visibleTurns.description%"
-        },
-        "aiBrowser.chat.notifications.enabled": {
-						"type": "boolean",
-						"default": true,
-						"title": "Notify When Agents Finish",
-						"markdownDescription": "%configuration.chat.notifications.enabled.description%"
-					},
-					"aiBrowser.chat.notifications.githubRun": {
-						"type": "boolean",
-						"default": true,
-						"title": "Notify When a Watched Actions Run Ends",
-						"markdownDescription": "%configuration.chat.notifications.githubRun.description%"
-					},
-					"aiBrowser.chat.notifications.onlyWhenAway": {
-						"type": "boolean",
-						"default": true,
-						"markdownDescription": "%configuration.chat.notifications.onlyWhenAway.description%"
-					},
-					"aiBrowser.chat.remoteFilesChrome": {
-						"type": "string",
-						"enum": ["off", "read", "attach", "write"],
-						"enumDescriptions": ["No access", "Browse only", "Browse and attach", "Browse, attach and edit"],
-						"default": "write",
-						"scope": "application",
-						"markdownDescription": "Project file access from Chrome. Controls Files and project attachments inside the conversation's working folder. Agent tool approvals and sandbox permissions are separate. Change this in VS Code only."
-					},
-					"aiBrowser.chat.remoteFilesWebsite": {
-						"type": "string",
-						"enum": ["off", "read", "attach", "write"],
-						"enumDescriptions": ["No access", "Browse only", "Browse and attach", "Browse, attach and edit"],
-						"default": "write",
-						"scope": "application",
-						"markdownDescription": "Project file access from the connected website. Controls Files and project attachments inside the conversation's working folder. Agent tool approvals and sandbox permissions are separate. Change this in VS Code only."
-					},
-					"aiBrowser.chat.chromeTerminalAccess": {
-						"type": "boolean",
-						"default": true,
-						"scope": "application",
-						"title": "Chrome Terminal Access",
-						"description": "Allow the paired Chrome extension on this computer to use this terminal capability. Exchange has separate permissions."
-					},
-					"aiBrowser.chat.chromeTerminalShell": {
-						"type": "boolean",
-						"default": true,
-						"scope": "application",
-						"title": "Open Shell Terminals from Chrome",
-						"description": "Allow the paired Chrome extension on this computer to use this terminal capability. Exchange has separate permissions."
-					},
-					"aiBrowser.chat.chromeTerminalAgent": {
-						"type": "boolean",
-						"default": true,
-						"scope": "application",
-						"title": "Open Agent Terminals from Chrome",
-						"description": "Allow the paired Chrome extension on this computer to use this terminal capability. Exchange has separate permissions."
-					},
-					"aiBrowser.chat.remoteTerminal": {
-						"type": "boolean",
-						"default": false,
-						"scope": "application",
-						"title": "Terminal Tabs on the Website",
-						"markdownDescription": "%configuration.chat.remoteTerminal.description%"
-					},
-					"aiBrowser.chat.remoteTerminalShell": {
-						"type": "boolean",
-						"default": false,
-						"scope": "application",
-						"title": "Open Plain Terminals from Chrome and the Website",
-						"markdownDescription": "%configuration.chat.remoteTerminalShell.description%"
-					},
-					"aiBrowser.chat.remoteTerminalAgent": {
-						"type": "boolean",
-						"default": false,
-						"scope": "application",
-						"title": "Open Agent Terminals from Chrome and the Website",
-						"markdownDescription": "%configuration.chat.remoteTerminalAgent.description%"
-					},
-					"aiBrowser.chat.claudePath": {
-						"type": "string",
-						"default": "",
-						"scope": "application",
-						"title": "Claude Code Executable",
-						"markdownDescription": "%configuration.chat.claudePath.description%"
-					},
-					"aiBrowser.chat.codexPath": {
-						"type": "string",
-						"default": "",
-						"scope": "application",
-						"title": "Codex Executable",
-						"markdownDescription": "%configuration.chat.codexPath.description%"
-					},
 					"aiBrowser.chat.geminiPath": {
 						"type": "string",
 						"default": "",
@@ -1245,114 +851,11 @@
 						"scope": "application",
 						"title": "OpenCode Executable",
 						"markdownDescription": "%configuration.chat.opencodePath.description%"
-					},
-					"aiBrowser.chat.piPath": {
-						"type": "string",
-						"default": "",
-						"scope": "application",
-						"title": "Pi Executable",
-						"markdownDescription": "%configuration.chat.piPath.description%"
-					},
-					"aiBrowser.chat.openrouterEndpoint": {
-						"type": "string",
-						"default": "",
-						"scope": "application",
-						"title": "OpenRouter Endpoint",
-						"markdownDescription": "%configuration.chat.openrouterEndpoint.description%"
-					},
-					"aiBrowser.chat.exchangeKeepAwakeMinutes": {
-						"type": "number",
-						"enum": [
-							0,
-							15,
-							30,
-							60,
-							120,
-							180,
-							240,
-							300,
-							360,
-							720,
-							1440,
-							2880,
-							-1
-						],
-						"enumDescriptions": [
-							"Disabled",
-							"15 minutes",
-							"30 minutes",
-							"1 hour",
-							"2 hours",
-							"3 hours",
-							"4 hours",
-							"5 hours",
-							"6 hours",
-							"12 hours",
-							"24 hours",
-							"48 hours",
-							"Until turned off"
-						],
-						"default": 60,
-						"scope": "window",
-						"title": "Keep Awake After Exchange Connection",
-						"markdownDescription": "Prevent automatic system sleep when a website viewer connects to this chat through Exchange. Each new viewer renews the timer. 0 disables this trigger; -1 keeps the computer awake until you turn it off or close the VS Code window. The display may still sleep."
-					},
-					"aiBrowser.chat.viewMode": {
-						"type": "string",
-						"enum": [
-							"minimal",
-							"compact",
-							"standard"
-						],
-						"enumDescriptions": [
-							"%configuration.chat.viewMode.minimal%",
-							"%configuration.chat.viewMode.compact%",
-							"%configuration.chat.viewMode.standard%"
-						],
-						"default": "compact",
-						"title": "View Mode",
-						"markdownDescription": "%configuration.chat.viewMode.description%"
-					},
-					"aiBrowser.chat.collapseToolCalls": {
-						"type": "boolean",
-						"default": true,
-						"title": "Fold Tool Calls",
-						"markdownDeprecationMessage": "%configuration.chat.collapseToolCalls.deprecated%",
-						"markdownDescription": "%configuration.chat.collapseToolCalls.description%"
-					},
-					"aiBrowser.chat.voiceLanguage": {
-						"type": "string",
-						"default": "",
-						"title": "Voice Message Language",
-						"pattern": "^([A-Za-z]{2,3}([-_][A-Za-z0-9]{2,8})*)?$",
-						"patternErrorMessage": "A language tag such as ru-RU or en-US, or empty for the Mac's own language.",
-						"markdownDescription": "%configuration.chat.voiceLanguage.description%"
 					}
 				}
 			}
 		],
 		"menus": {
-			"explorer/context": [
-				{
-					"command": "aiBrowser.chat.attachExplorerResources",
-					"group": "8_aiBrowser@1",
-					"when": "resourceScheme == file && !aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-				}
-			],
-			"editor/context": [
-				{
-					"command": "aiBrowser.chat.attachEditorSelection",
-					"group": "1_modification@50",
-					"when": "editorHasSelection && !aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-				}
-			],
-			"editor/title/context": [
-				{
-					"command": "aiBrowser.chat.attachExplorerResources",
-					"group": "1_modification@50",
-					"when": "resourceScheme == file && !aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-				}
-			],
 			"editor/title": [
 				{
 					"submenu": "aiBrowser.elementMenu",
@@ -1428,26 +931,6 @@
 					"command": "aiBrowser.repeat.codex.xpath",
 					"group": "navigation@2",
 					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'codex:xpath' && aiBrowser.codexInstalled"
-				},
-				{
-					"command": "aiBrowser.repeat.chat.element",
-					"group": "navigation@2",
-					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'chat:element' && !aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-				},
-				{
-					"command": "aiBrowser.repeat.chat.cssPath",
-					"group": "navigation@2",
-					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'chat:cssPath' && !aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-				},
-				{
-					"command": "aiBrowser.repeat.chat.cssLocation",
-					"group": "navigation@2",
-					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'chat:cssLocation' && !aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-				},
-				{
-					"command": "aiBrowser.repeat.chat.xpath",
-					"group": "navigation@2",
-					"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'chat:xpath' && !aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
 				},
 				{
 					"command": "aiBrowser.recording.pause",
@@ -1551,11 +1034,6 @@
 					"group": "3_assistant@2.75"
 				},
 				{
-					"submenu": "aiBrowser.chatMenu",
-					"group": "3_assistant@3",
-					"when": "!aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-				},
-				{
 					"command": "aiBrowser.checkMcpConnection",
 					"group": "3_assistant@4"
 				},
@@ -1574,14 +1052,6 @@
 				}
 			],
 			"commandPalette": [
-				{
-					"command": "aiBrowser.shareTabWithPi",
-					"when": "!aiBrowser.chatUnsupported"
-				},
-				{
-					"command": "aiBrowser.shareTabWithOpenRouter",
-					"when": "!aiBrowser.chatUnsupported"
-				},
 				{
 					"command": "aiBrowser.recording.stopEnding",
 					"when": "false"
@@ -1653,86 +1123,6 @@
 				{
 					"command": "aiBrowser.repeat.codex.xpath",
 					"when": "false"
-				},
-				{
-					"command": "aiBrowser.repeat.chat.element",
-					"when": "false"
-				},
-				{
-					"command": "aiBrowser.repeat.chat.cssPath",
-					"when": "false"
-				},
-				{
-					"command": "aiBrowser.repeat.chat.cssLocation",
-					"when": "false"
-				},
-				{
-					"command": "aiBrowser.repeat.chat.xpath",
-					"when": "false"
-				},
-				{
-					"command": "aiBrowser.chat.addElement",
-					"when": "!aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-				},
-				{
-					"command": "aiBrowser.chat.addCssPath",
-					"when": "!aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-				},
-				{
-					"command": "aiBrowser.chat.addCssLocation",
-					"when": "!aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-				},
-				{
-					"command": "aiBrowser.chat.addXPath",
-					"when": "!aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-				},
-				{
-					"command": "aiBrowser.chat.addScreenshot",
-					"when": "!aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-				},
-				{
-					"command": "aiBrowser.chat.addPage",
-					"when": "!aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-				},
-				{
-					"command": "aiBrowser.chat.newChat",
-					"when": "!aiBrowser.chatUnsupported"
-				},
-				{
-					"command": "aiBrowser.chat.newTerminal",
-					"when": "!aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-				},
-				{
-					"command": "aiBrowser.chat.history",
-					"when": "!aiBrowser.chatUnsupported"
-				},
-				{
-					"command": "aiBrowser.chat.refreshAgents",
-					"when": "!aiBrowser.chatUnsupported"
-				},
-				{
-					"command": "aiBrowser.chat.allAgents",
-					"when": "!aiBrowser.chatUnsupported"
-				},
-				{
-					"command": "aiBrowser.chat.closeTab",
-					"when": "false"
-				},
-				{
-					"command": "aiBrowser.chat.keepAwake",
-					"when": "!aiBrowser.chatUnsupported && !aiBrowser.keepAwakeActive"
-				},
-				{
-					"command": "aiBrowser.chat.keepAwakeActive",
-					"when": "!aiBrowser.chatUnsupported && aiBrowser.keepAwakeActive"
-				},
-				{
-					"command": "aiBrowser.chat.settings",
-					"when": "!aiBrowser.chatUnsupported"
-				},
-				{
-					"command": "aiBrowser.recording.startChat",
-					"when": "!aiBrowser.chatUnsupported && !aiBrowser.chatBlocked && !aiBrowser.recordingActive"
 				},
 				{
 					"command": "aiBrowser.recording.start",
@@ -1809,37 +1199,6 @@
 					"group": "2_recording"
 				}
 			],
-			"aiBrowser.chatMenu": [
-				{
-					"command": "aiBrowser.chat.addElement",
-					"group": "1_add@1"
-				},
-				{
-					"command": "aiBrowser.chat.addCssPath",
-					"group": "1_add@2"
-				},
-				{
-					"command": "aiBrowser.chat.addCssLocation",
-					"group": "1_add@3"
-				},
-				{
-					"command": "aiBrowser.chat.addXPath",
-					"group": "1_add@4"
-				},
-				{
-					"command": "aiBrowser.chat.addScreenshot",
-					"group": "2_page@1"
-				},
-				{
-					"command": "aiBrowser.chat.addPage",
-					"group": "2_page@2"
-				},
-				{
-					"command": "aiBrowser.recording.startChat",
-					"group": "2_recording",
-					"when": "!aiBrowser.recordingActive"
-				}
-			],
 			"aiBrowser.codexMenu": [
 				{
 					"command": "aiBrowser.addElementToCodex",
@@ -1910,38 +1269,6 @@
 					"group": "2_vault@3"
 				}
 			],
-			"view/title": [
-				{
-					"command": "aiBrowser.chat.settings",
-					"when": "view == aiBrowser.chat",
-					"group": "navigation@5"
-				},
-				{
-					"command": "aiBrowser.chat.newChat",
-					"when": "view == aiBrowser.chat",
-					"group": "navigation@1"
-				},
-				{
-					"command": "aiBrowser.chat.history",
-					"when": "view == aiBrowser.chat",
-					"group": "navigation@2"
-				},
-				{
-					"command": "aiBrowser.chat.allAgents",
-					"when": "view == aiBrowser.chat",
-					"group": "navigation@3.5"
-				},
-				{
-					"command": "aiBrowser.chat.keepAwake",
-					"when": "view == aiBrowser.chat && !aiBrowser.keepAwakeActive",
-					"group": "navigation@4"
-				},
-				{
-					"command": "aiBrowser.chat.keepAwakeActive",
-					"when": "view == aiBrowser.chat && aiBrowser.keepAwakeActive",
-					"group": "navigation@4"
-				}
-			],
 			"aiBrowser.recordingMenu": [
 				{
 					"command": "aiBrowser.recording.balanced",
@@ -1984,16 +1311,6 @@
 					"group": "1_opencode@2"
 				},
 				{
-					"command": "aiBrowser.shareTabWithPi",
-					"group": "1_chat@1",
-					"when": "!aiBrowser.chatUnsupported"
-				},
-				{
-					"command": "aiBrowser.shareTabWithOpenRouter",
-					"group": "1_chat@2",
-					"when": "!aiBrowser.chatUnsupported"
-				},
-				{
 					"command": "aiBrowser.connectOtherAgent",
 					"group": "2_mcp@1"
 				},
@@ -2023,10 +1340,6 @@
 			{
 				"id": "aiBrowser.geminiMenu",
 				"label": "%submenu.geminiMenu.label%"
-			},
-			{
-				"id": "aiBrowser.chatMenu",
-				"label": "%submenu.chatMenu.label%"
 			},
 			{
 				"id": "aiBrowser.loginsMenu",
@@ -2133,36 +1446,6 @@
 				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'codex:xpath' && aiBrowser.codexInstalled"
 			},
 			{
-				"command": "aiBrowser.repeat.chat.element",
-				"key": "ctrl+alt+c",
-				"mac": "cmd+alt+c",
-				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'chat:element' && !aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-			},
-			{
-				"command": "aiBrowser.repeat.chat.cssPath",
-				"key": "ctrl+alt+c",
-				"mac": "cmd+alt+c",
-				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'chat:cssPath' && !aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-			},
-			{
-				"command": "aiBrowser.repeat.chat.cssLocation",
-				"key": "ctrl+alt+c",
-				"mac": "cmd+alt+c",
-				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'chat:cssLocation' && !aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-			},
-			{
-				"command": "aiBrowser.repeat.chat.xpath",
-				"key": "ctrl+alt+c",
-				"mac": "cmd+alt+c",
-				"when": "activeEditor == 'workbench.editor.browser' && aiBrowser.lastElementAction == 'chat:xpath' && !aiBrowser.chatUnsupported && !aiBrowser.chatBlocked"
-			},
-			{
-				"command": "aiBrowser.chat.closeTab",
-				"key": "ctrl+w",
-				"mac": "cmd+w",
-				"when": "aiBrowser.chatFocused && !aiBrowser.chatUnsupported"
-			},
-			{
 				"command": "aiBrowser.logins.fill",
 				"key": "ctrl+shift+l",
 				"mac": "cmd+shift+l",
@@ -2173,27 +1456,23 @@
 	"scripts": {
 		"compile": "npm run build-ext && npm run build-webview",
 		"watch": "run-p -l watch-ext watch-webview watch-typecheck-webview",
-		"build-ext": "npm run clean-ext && tsc --project ./tsconfig.json && node scripts/stage-terminal.mjs",
+		"build-ext": "npm run clean-ext && tsc --project ./tsconfig.json",
 		"build-webview": "node ./esbuild.webview.mts",
-		"build-chrome": "node ./scripts/build-chrome.mjs",
-		"typecheck-chrome": "tsc --project ./chrome-extension/tsconfig.json --noEmit",
 		"watch-ext": "tsc --project ./tsconfig.json --watch",
 		"watch-webview": "node ./esbuild.webview.mts --watch",
 		"watch-typecheck-webview": "tsc --project ./preview-src/tsconfig.json --noEmit --watch",
-		"typecheck": "run-p -l typecheck-ext typecheck-webview typecheck-tests typecheck-chrome",
+		"typecheck": "run-p -l typecheck-ext typecheck-webview typecheck-tests",
 		"typecheck-ext": "tsc --project ./tsconfig.json --noEmit",
 		"typecheck-webview": "tsc --project ./preview-src/tsconfig.json --noEmit",
 		"typecheck-tests": "tsc --project ./tsconfig.test.json",
 		"test": "node --test \"preview-src/**/*.test.ts\" \"src/**/*.test.ts\"",
-		"test:chat-ui": "npm run build-webview && npm run build-chrome && node exchange-server/scripts/build-chat.mjs && node scripts/test-visualizations-browser.mjs",
 		"check-manifest": "node ./scripts/check-manifest.mjs",
 		"package": "vsce package --no-dependencies --out tab-browser-ultimate.vsix",
 		"publish:ovsx": "npm run package && ovsx publish tab-browser-ultimate.vsix",
 		"verify-pat": "ovsx verify-pat DenysDavydov",
 		"download-api": "dts dev",
 		"vscode:prepublish": "npm run compile",
-		"clean-ext": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\"",
-		"package-chrome": "node ./scripts/package-chrome.mjs"
+		"clean-ext": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\""
 	},
 	"devDependencies": {
 		"@types/node": "24.x",
@@ -2201,18 +1480,12 @@
 		"@vscode/codicons": "^0.0.36",
 		"@vscode/dts": "^0.4.1",
 		"@vscode/vsce": "^3.9.2",
-		"@xterm/addon-fit": "^0.11.0",
-		"@xterm/headless": "6.0.0",
-		"@xterm/xterm": "^6.0.0",
 		"esbuild": "^0.28.2",
-		"node-pty": "^1.1.0",
 		"npm-run-all2": "^9.0.3",
 		"ovsx": "^1.1.1",
-		"typescript": "^5.9.3",
-		"yazl": "2.5.1"
+		"typescript": "^5.9.3"
 	},
 	"allowScripts": {
-		"esbuild@0.28.2": true,
-		"node-pty@1.1.0": true
+		"esbuild@0.28.2": true
 	}
 }

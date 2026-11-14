@@ -315,26 +315,14 @@ test('losing the background encoder releases CDP and removes partial output', as
 });
 
 
-test('a background chat recording uses the caller project instead of the selected chat project', async () => {
- const h = harness();
- try {
-  h.recording.project = (chatId: string) => chatId === 'chat-a' ? '/project-a' : undefined;
-  await h.recording.start({ kind: 'codex', sessionId: 'session-a', chatId: 'chat-a' });
-  assert.deepEqual(h.storageProjects, ['/project-a']);
-  assert.deepEqual(h.trackedProjects, ['/project-a']);
-  await h.recording.control('stop');
- } finally { h.cleanup(); }
-});
-
-test('an unknown caller chat never falls back to another chat project', async () => {
- const h = harness();
- try {
-  h.recording.project = () => undefined;
-  await h.recording.start({ kind: 'codex', chatId: 'closed-chat' });
-  assert.deepEqual(h.storageProjects, [undefined]);
-  assert.deepEqual(h.trackedProjects, [undefined]);
-  await h.recording.control('stop');
- } finally { h.cleanup(); }
+test('a recording is stored under the window project, whoever asked for it', async () => {
+	const h = harness();
+	try {
+		await h.recording.start({ kind: 'codex', sessionId: 'session-a' });
+		assert.deepEqual(h.storageProjects, ['/project-b']);
+		assert.deepEqual(h.trackedProjects, ['/project-b']);
+		await h.recording.control('stop');
+	} finally { h.cleanup(); }
 });
 
 test('reaching the size limit stops the recording and keeps what was written', async () => {

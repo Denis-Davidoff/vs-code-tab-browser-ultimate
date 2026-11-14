@@ -1,10 +1,7 @@
 {
 	"extends": "../tsconfig.base.json",
 	"compilerOptions": {
-		// ".." and not ".": `chat.ts` reads the message types from
-		// `../src/chat/chatProtocol.ts` with `import type`. Nothing is emitted from
-		// this project (esbuild bundles it), so the wider root changes no output.
-		"rootDir": "..",
+		"rootDir": ".",
 		"outDir": "./dist/",
 		"lib": [
 			"ES2024",

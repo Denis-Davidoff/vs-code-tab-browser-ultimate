@@ -8,7 +8,6 @@ import type { BrowserController, ShareView } from '../browser/browserController'
 import { inUseMarker, sharedMarker, stripMarker } from '../browser/shareIndicator';
 import { plainInLabel, plainInMarkdown } from '../core/notifyText';
 import { normalizeAddress } from '../core/webUrl';
-import { supportsSecondarySidebar } from '../chat/chatView';
 import { pageTitle } from '../translate/translateText';
 import {
 	browserApiState, integratedBrowserCommand, onDidChangeGrantState,
@@ -200,16 +199,14 @@ async function showMenu(controller: BrowserController): Promise<void> {
 	// the menu was still offering them.
 	const anyTab = controller.hasOpenTabs;
 
-	// Every agent the plugin supports; Pi and OpenRouter live in the chat only.
+	// Every agent the plugin connects.
 	const agents = [
 		{ who: 'claude', name: 'Claude Code', connect: 'aiBrowser.connectClaudeCode' },
 		{ who: 'codex', name: 'Codex', connect: 'aiBrowser.connectCodex' },
 		{ who: 'gemini', name: 'Gemini CLI', connect: 'aiBrowser.connectGemini' },
 		{ who: 'opencode', name: 'OpenCode', connect: 'aiBrowser.connectOpenCode' },
-		{ who: 'pi', name: 'Pi', connect: 'aiBrowser.connectChatAgent' },
-		{ who: 'openrouter', name: 'OpenRouter', connect: 'aiBrowser.connectChatAgent' },
 	] as const;
-	const availableAgents = agents.filter(agent => supportsSecondarySidebar(vscode.version) || (agent.who !== 'pi' && agent.who !== 'openrouter'));
+	const availableAgents = agents;
 
 	items.push({ label: vscode.l10n.t("Open"), kind: vscode.QuickPickItemKind.Separator });
 	items.push({
@@ -225,7 +222,6 @@ async function showMenu(controller: BrowserController): Promise<void> {
 		run: async () => {
 			const agent = (await vscode.window.showQuickPick(availableAgents.map(agent => ({
 				label: agent.name, agent,
-				description: agent.connect === 'aiBrowser.connectChatAgent' ? vscode.l10n.t("Opens an AI Browser Chat with it") : undefined,
 			})), {
 				title: vscode.l10n.t("Open Google Chrome for which agent?"), ignoreFocusOut: true,
 			}))?.agent;
@@ -241,27 +237,6 @@ async function showMenu(controller: BrowserController): Promise<void> {
 			label: vscode.l10n.t("$(file) Open File in VS Code Tab…"),
 			detail: vscode.l10n.t("Preview a local HTML file"),
 			run: () => openFile(),
-		});
-	}
-
-	// The same three places the chat's own New Chat offers. Below VS Code 1.106
-	// there is no chat view to reveal, so the section is left out there.
-	if (supportsSecondarySidebar(vscode.version)) {
-		items.push({ label: vscode.l10n.t("AI Browser Chat"), kind: vscode.QuickPickItemKind.Separator });
-		items.push({
-			label: vscode.l10n.t("$(comment-discussion) New chat"),
-			detail: vscode.l10n.t("A new tab in the AI Browser chat, shown in the side bar"),
-			run: () => vscode.commands.executeCommand('aiBrowser.chat.newChat', 'here'),
-		});
-		items.push({
-			label: vscode.l10n.t("$(files) Chat in a new tab"),
-			detail: vscode.l10n.t("An editor tab of its own"),
-			run: () => vscode.commands.executeCommand('aiBrowser.chat.newChat', 'tab'),
-		});
-		items.push({
-			label: vscode.l10n.t("$(link-external) Chat in a new window"),
-			detail: vscode.l10n.t("A separate window holding only the chat"),
-			run: () => vscode.commands.executeCommand('aiBrowser.chat.newChat', 'window'),
 		});
 	}
 
@@ -300,9 +275,7 @@ async function showMenu(controller: BrowserController): Promise<void> {
 	// One row per action; choose the agent afterwards.
 	const pickAgent = async (title: string) => (await vscode.window.showQuickPick(
 		availableAgents
-			.map(agent => ({ label: agent.name, agent, description: agent.connect === 'aiBrowser.connectChatAgent'
-				? vscode.l10n.t("AI Browser Chat · tools connected automatically")
-				: agent.who === 'opencode' ? vscode.l10n.t("Opens a terminal with browser tools") : undefined })), { title, ignoreFocusOut: true }))?.agent;
+			.map(agent => ({ label: agent.name, agent, description: agent.who === 'opencode' ? vscode.l10n.t("Opens a terminal with browser tools") : undefined })), { title, ignoreFocusOut: true }))?.agent;
 	items.push({
 		label: focused
 			? vscode.l10n.t("$(comment-discussion) Connect your agent and share this tab")
@@ -411,18 +384,6 @@ async function showMenu(controller: BrowserController): Promise<void> {
 			description: page,
 			run: () => vscode.commands.executeCommand('aiBrowser.shareTabWithOpenCode'),
 		});
-		if (supportsSecondarySidebar(vscode.version)) {
-			items.push({
-				label: vscode.l10n.t("$(link) Give this tab to Pi"),
-				description: page,
-				run: () => vscode.commands.executeCommand('aiBrowser.shareTabWithPi'),
-			});
-			items.push({
-				label: vscode.l10n.t("$(link) Give this tab to OpenRouter"),
-				description: page,
-				run: () => vscode.commands.executeCommand('aiBrowser.shareTabWithOpenRouter'),
-			});
-		}
 		items.push({
 			label: alreadyShared
 				? vscode.l10n.t("$(link) Give this tab to every assistant")

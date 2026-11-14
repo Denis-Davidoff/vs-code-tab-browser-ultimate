@@ -3,14 +3,11 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { chatOfCapability } from '../core/chatCapability';
 import * as http from 'http';
 import * as net from 'net';
 import * as vscode from 'vscode';
 import { BrowserController } from '../browser/browserController';
 import type { BrowserRecording } from '../browser/recording';
-import { chatTools, type ChatControlPort } from './chatTools';
-import { terminalTools } from './terminalTools';
 import { modelFrameLimits } from '../browser/screenshotFrames';
 import { defaultSegmentChars, maxSegmentChars, parseReplacements, segmentBudget } from '../translate/translateText';
 import { generateUuid } from '../core/uuid';
@@ -130,8 +127,6 @@ export class McpServer implements vscode.Disposable {
 		 */
 		sessionKinds: Map<string, ClientKind>,
 		private readonly _recording?: BrowserRecording,
-		/** The AI Browser chat, filled in once it exists; see `chatTools.ts`. */
-		private readonly _chat?: ChatControlPort,
 	) {
 		this._sessionKinds = sessionKinds;
 		this._tools = this._buildTools();
@@ -368,13 +363,9 @@ export class McpServer implements vscode.Disposable {
 		// 🔗 — "nobody has picked this up" — while that very client drove the
 		// page, which is the one thing the marker exists to tell apart. An
 		// unrecognised assistant is `other` everywhere else here too.
-		// The header carries a value minted for a conversation, never its id:
-		// one this host did not mint names no chat (`chatCapability.ts`).
-		const capability = req.headers['x-ai-browser-chat'];
-		const chatId = typeof capability === 'string' ? chatOfCapability(capability) : undefined;
 		const wantedTab = req.headers['x-ai-browser-tab'];
 		const preferredTab = typeof wantedTab === 'string' && /^tab-[a-z0-9]{1,12}-\d{1,9}$/.test(wantedTab) ? wantedTab : undefined;
-		const caller: Caller = { kind: kind ?? 'other', sessionId, ...(chatId ? { chatId } : {}), ...(preferredTab ? { preferredTab } : {}) };
+		const caller: Caller = { kind: kind ?? 'other', sessionId, ...(preferredTab ? { preferredTab } : {}) };
 
 		// **A call the client gave up on is cancelled here too.** The MCP
 		// client sends `notifications/cancelled` when its user presses Esc, and
@@ -686,21 +677,19 @@ export class McpServer implements vscode.Disposable {
 				description: 'Starts a silent video of this caller\'s browser viewport, without OS screen capture. '
 					+ 'Returns a recording id immediately after capture starts. The user can pause or stop in the browser toolbar. '
 					+ 'Use browser_recording_status with that id to retrieve the finished file after a toolbar stop. '
-					+ 'AI Browser Chat clients attach to the chat draft selected at start; external clients copy the file path to the clipboard. '
-					+ 'destination overrides this choice. One recording at a time, up to the length set in the user\'s Chat Settings (5 active minutes unless changed, 10 s to 1 h; maxSeconds in the result) and a size limit that follows from it; reaching either limit stops the recording and keeps the video (limitReached says which). '
+					+ 'When it finishes, the file path is copied to the clipboard and returned by browser_recording_status. One recording at a time, up to the length the user set (5 active minutes unless changed, 10 s to 1 h; maxSeconds in the result) and a size limit that follows from it; reaching either limit stops the recording and keeps the video (limitReached says which). '
 					+ 'Keep the browser visible for smooth capture. Video is not sent as native model input.',
-				inputSchema: schema({ destination: { type: 'string', enum: ['chat', 'clipboard'], description: 'chat attaches to the AI Browser Chat draft selected at start; clipboard copies the local file path on completion.' } }),
-				run: async (args, caller, signal) => {
+				inputSchema: schema({}),
+				run: async (_args, caller, signal) => {
 					if (!this._recording) { throw new Error('Video recording is unavailable.'); }
-					if (args.destination !== undefined && args.destination !== 'chat' && args.destination !== 'clipboard') { throw new Error('destination must be chat or clipboard.'); }
-					return this._recording.start(caller, args.destination ?? (caller.chatId ? 'chat' : 'clipboard'), signal);
+					return this._recording.start(caller, 'clipboard', signal);
 				},
 			},
 			...(['pause', 'resume', 'stop', 'status'] as const).map(action => ({
 				name: `browser_recording_${action}`, title: `Browser recording: ${action}`,
 				description: action === 'status'
 					? 'Reads this MCP session\'s recording state, including a toolbar stop. A completed result gives file, mimeType, durationSeconds, bytes, attachedToChat and clipboardCopied. No video bytes are returned.'
-					: `${action} this MCP session's recording. Paused recordings capture no frames. Stop finalizes the video and delivers it to the destination selected at start.`,
+					: `${action} this MCP session's recording. Paused recordings capture no frames. Stop finalizes the video and copies its file path to the clipboard.`,
 				inputSchema: schema({ id: string('Recording id returned by browser_recording_start') }, ['id']),
 				run: async (args: Record<string, unknown>, caller: Caller) => {
 					if (!this._recording) { throw new Error('Video recording is unavailable.'); }
@@ -805,8 +794,6 @@ export class McpServer implements vscode.Disposable {
 					caller),
 			},
 			...this._editorTools(),
-			...(this._chat ? chatTools(this._chat) : []),
-			...(this._chat ? terminalTools(this._chat) : []),
 		];
 	}
 

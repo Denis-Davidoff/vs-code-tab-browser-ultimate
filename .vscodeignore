@@ -2,7 +2,6 @@ src/**
 # The MPL-2.0 file ships in source form beside its compiled copy (MPL §3.2(a)).
 !src/logins/loginFormScript.ts
 preview-src/**
-chrome-extension/**
 tsconfig*.json
 **/*.tsbuildinfo
 esbuild*.mts
@@ -18,6 +17,7 @@ vscode.proposed.*.d.ts
 package-lock.json
 .vscode/**
 CLAUDE.md
+README.draft.md
 scripts/**
 vscode-marketplace/**
 # Not part of the extension: the readme's image is linked from GitHub (vsce
@@ -26,16 +26,6 @@ vscode-marketplace/**
 ai-browser-instruct.jpg
 PUBLISHING.md
 media/icon.svg
-# The voice helper ships compiled (bin/ai-browser-voice); its Swift source does not.
-native/**
-
-# Separate hosted application
-exchange-server/**
-
-# Spinner design previews are not extension runtime assets.
-work/spinner-variants/**
-work/**
-deploy-exchange.sh
 
 # Sourcemaps: about 5 MB of the package, of use only for debugging a local build.
 **/*.map

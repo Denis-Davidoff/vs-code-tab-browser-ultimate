@@ -133,14 +133,14 @@ for (const file of readdirSync(join(root, 'media', 'icons'))) {
 /*
  * The element commands carry one crosshair per kind, whatever the destination:
  * the centre dot says *what* is copied (element, CSS path, CSS path + location,
- * XPath), and Copy, Claude Code, Codex and the chat share it. So the same kind
+ * XPath), and Copy, Claude Code, Codex share it. So the same kind
  * must share one icon across destinations, and no two kinds may share a dot.
  */
 const grid = {
-	element: ['aiBrowser.copyElement', 'aiBrowser.addElementToClaudeCode', 'aiBrowser.addElementToCodex', 'aiBrowser.chat.addElement'],
-	cssPath: ['aiBrowser.copyElementCssPath', 'aiBrowser.addCssPathToClaudeCode', 'aiBrowser.addCssPathToCodex', 'aiBrowser.chat.addCssPath'],
-	cssLocation: ['aiBrowser.copyElementCssLocation', 'aiBrowser.addCssLocationToClaudeCode', 'aiBrowser.addCssLocationToCodex', 'aiBrowser.chat.addCssLocation'],
-	xpath: ['aiBrowser.copyElementXPath', 'aiBrowser.addXPathToClaudeCode', 'aiBrowser.addXPathToCodex', 'aiBrowser.chat.addXPath'],
+	element: ['aiBrowser.copyElement', 'aiBrowser.addElementToClaudeCode', 'aiBrowser.addElementToCodex'],
+	cssPath: ['aiBrowser.copyElementCssPath', 'aiBrowser.addCssPathToClaudeCode', 'aiBrowser.addCssPathToCodex'],
+	cssLocation: ['aiBrowser.copyElementCssLocation', 'aiBrowser.addCssLocationToClaudeCode', 'aiBrowser.addCssLocationToCodex'],
+	xpath: ['aiBrowser.copyElementXPath', 'aiBrowser.addXPathToClaudeCode', 'aiBrowser.addXPathToCodex'],
 };
 const stem = id => {
 	const icon = commands.get(id)?.icon;
@@ -271,10 +271,6 @@ const twins = {
 	'aiBrowser.repeat.codex.cssPath': 'aiBrowser.addCssPathToCodex',
 	'aiBrowser.repeat.codex.cssLocation': 'aiBrowser.addCssLocationToCodex',
 	'aiBrowser.repeat.codex.xpath': 'aiBrowser.addXPathToCodex',
-	'aiBrowser.repeat.chat.element': 'aiBrowser.chat.addElement',
-	'aiBrowser.repeat.chat.cssPath': 'aiBrowser.chat.addCssPath',
-	'aiBrowser.repeat.chat.cssLocation': 'aiBrowser.chat.addCssLocation',
-	'aiBrowser.repeat.chat.xpath': 'aiBrowser.chat.addXPath',
 	'aiBrowser.repeat.annotate': 'aiBrowser.annotatePage',
 	'aiBrowser.repeat.annotateAnywhere': 'aiBrowser.annotateAnywhere',
 };

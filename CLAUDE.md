@@ -1,5 +1,20 @@
 # AI Browser — baseline working version
 
+> **Chat-free build (0.10.0, 2026-11-14).** This repository builds AI Browser **without the chat**. The chat moved to HoverDeck
+> (`github.com/Denis-Davidoff/hoverdeck`), together with:
+> - terminal tabs, the Chrome side panel and Exchange;
+> - keep-awake, voice, and the Pi and OpenRouter agents.
+>
+> The `src/chat/`, `src/terminal/`, `src/power/`, `chrome-extension/`, `exchange-server/` and `native/` trees are gone. The sections
+> below that describe them — "The AI Browser chat" and everything under it, the chat tools, terminal tabs, keep-awake,
+> voice, Chrome and Exchange chat — document HoverDeck and are kept only as background. What changed here:
+> - **Recording** is encoded by `aiBrowser.recorder`, a webview view in the panel area (`src/browser/recorderView.ts`,
+>   `preview-src/recorder.ts` → `media/recorder.js`). It uses the chat's old encoder protocol unchanged, and delivers to the clipboard only.
+> - **Connect OpenCode and Connect Gemini CLI** find their CLIs through `src/mcp/agentCli.ts`, which was taken out of the chat's `agentBinary.ts`.
+> - **The webview build** has three entries — `index`, `recorder` and `codicon` — and no `__TERMINAL__` define.
+>
+> Build: `npm install && npm run compile && npm test && npm run package`.
+
 **Status: this version works. It builds from scratch with zero errors and is a good starting
 point.** New functionality gets built on top of it. When changing anything, preserve the
 invariants listed under [Things that break silently](#things-that-break-silently) — those are

@@ -24,8 +24,7 @@ import { withFileRule } from './gitignoreRule';
 import { workspaceIsRemoteFromHost } from '../setup/proposedApi';
 import { writeFileAtomic } from '../core/safeFiles';
 import { gitBinary } from '../core/gitBinary';
-import { chooseAgentBinary } from '../chat/agentBinary';
-import { geminiPath, geminiTrustsFolder } from '../chat/geminiAgent';
+import { chooseAgentBinary, cliPath as geminiPath, geminiTrustsFolder } from './agentCli';
 
 /**
  * Three clients, three places to configure, and only one of them has an API.
@@ -906,16 +905,6 @@ export function connectionPrompt(entryName: string, configPath: string, shared?:
 			+ ' not select another, and other tabs in the window are not yours to read.');
 	}
 	return lines.join('\n');
-}
-
-/** Pi and OpenRouter receive their tools from the chat, without an MCP config file. */
-export function chatConnectionPrompt(name: string, shared?: SharedPage): string {
-	return [
-		`You are ${name} in AI Browser Chat. Your browser tools are provided automatically by the chat. Do not add or edit any MCP configuration.`,
-		'Call the tool whose name ends in browser_state once to check the connection; nothing else yet. If it is unavailable, ask the user to check Chat Settings and start a new chat with this agent.',
-		...(shared ? [`The user has shared one browser tab with you: ${plainInPrompt(shared.title ?? shared.url)} (${shared.url}). Use only that tab.`] : []),
-		'After checking the connection, wait for the user’s request.',
-	].join('\n');
 }
 
 /** Any MCP client can use the HTTP endpoint, without a client-specific config writer. */

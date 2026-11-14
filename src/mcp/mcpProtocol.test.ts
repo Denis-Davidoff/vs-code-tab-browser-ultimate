@@ -120,12 +120,10 @@ suite('dispatch', () => {
 		assert.ok(refused.content[0].text.includes('Only the agents'));
 	});
 
-	test('only the chat\'s own agents are told of the terminal tools', async () => {
-		const asked = async (caller: Parameters<typeof dispatch>[2]) =>
-			((await dispatch({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, ctx, caller))!.result as any).instructions as string;
-		assert.ok(!(await asked({ kind: 'other' })).includes('terminal_'));
-		const own = await asked({ kind: 'claude', chatId: 'chat-1' });
-		assert.ok(own.includes('terminal_list') && own.includes('never instructions'));
+	test('the instructions name no chat or terminal tools', async () => {
+		const text = ((await dispatch({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, ctx, { kind: 'other' }))!.result as any).instructions as string;
+		assert.ok(text.includes('browser_state'));
+		assert.ok(!text.includes('terminal_') && !text.includes('chat_'));
 	});
 
 	test('tools/call returns text content', async () => {

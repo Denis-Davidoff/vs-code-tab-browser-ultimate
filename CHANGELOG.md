@@ -1,5 +1,13 @@
 # Changelog
 
+**0.10.0** — The chat moved to its own extension, [HoverDeck](https://open-vsx.org/extension/DenysDavydov/hoverdeck), and AI Browser is the browser without it. This includes the chat panel, terminal tabs, the Chrome side panel, Exchange, keep-awake, voice messages and the Pi and OpenRouter agents. What stays:
+
+- the MCP server with its browser, Chrome and editor tools;
+- Connect for Claude Code, Codex, Gemini CLI, OpenCode and other MCP clients, plus Add to Claude Code / Codex;
+- tab sharing, saved logins and passkeys, Translate Page, page annotations and video recording.
+
+Recordings are now encoded by a small **Video Recorder** view in the panel area, and Stop copies the file path to the clipboard. Both extensions can be installed side by side.
+
 **0.9.23** — With a conversation docked under a terminal, opening Skills, Activity or another composer tab no longer squeezes the terminal to nothing: it keeps about five lines of text and the docked messages give way instead. The composer tab row under a terminal sits closer to the border and the message box, and the terminal toolbar strip is a shade darker.
 
 **0.9.22** — Light theme fixes: quotes are a soft tinted box with a yellow edge instead of a dark block, and inline code inside code blocks no longer sits on a dark strip. Appearance → Light or Dark over an editor of the other kind now forces the right colours for quotes, code, keys, scrollbars, notices and the terminal; the terminal re-colours when you change the theme. Code boxes in the approval cards are visible in Light Modern. The chat's "+" has **Folder…** beside **File…**, and both pick several at once; the terminal's Insert has Folder… too. The Conversation tab above the message box is now **Prompts** (Alt+P): your messages in this chat, newest first, each with a jump to its answer. A terminal pinned to a conversation shows its message box, and **Show messages** brings the conversation above it; the terminal toolbar is one compact row with drawn tooltips and arrow-key navigation. A bell on running GitHub Actions runs plays a sound and shows a system notification when the run ends (`aiBrowser.chat.sound.githubRun`, `aiBrowser.chat.notifications.githubRun`). A selection copied from the chat keeps its formatting as Markdown and HTML. The Commit window can commit and push in one step, and the Branches window has **Create PR**. With the message box empty and text on the clipboard, Send turns into **Paste** in the same place. In the GitHub tab a merged branch no longer shows an unusable "Create pull request" row, and an unpushed branch's row opens the Branches window.

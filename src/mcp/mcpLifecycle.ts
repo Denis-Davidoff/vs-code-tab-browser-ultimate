@@ -9,7 +9,6 @@ import type { ClientKind } from './mcpProtocol';
 import { portOffset, portOrder } from './mcpPort';
 import { McpServer } from './mcpServer';
 import type { BrowserRecording } from '../browser/recording';
-import type { ChatControlPort } from './chatTools';
 import {
 	missingWorkspaceTokens, emptyScan, markWorkspaceAlive, markWorkspaceHandled, registerWithVsCode,
 	repairConfigs, stillMissing, tokenKeyPrefix, workspaceFolder, type RepairReport,
@@ -160,7 +159,6 @@ export class McpLifecycle implements vscode.Disposable {
 		private readonly browser: BrowserController,
 		private readonly version: string,
 		private readonly recording?: BrowserRecording,
-		private readonly chat?: ChatControlPort,
 	) {
 		// **Only `_servedFolder`, and only once there is one.** Stamping
 		// `workspaceFolder()` unconditionally wrote a `mcp.seen:` row for every
@@ -251,7 +249,7 @@ export class McpLifecycle implements vscode.Disposable {
 		const folder = workspaceFolder();
 		const token = this._workspaceToken(folder);
 		const server = new McpServer(
-			this.browser, token, folder?.name, this.version, this._sessionKinds, this.recording, this.chat);
+			this.browser, token, folder?.name, this.version, this._sessionKinds, this.recording);
 
 		try {
 			await server.start(this._portOrder(configuration, folder));
