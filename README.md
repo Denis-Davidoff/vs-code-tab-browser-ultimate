@@ -1,5 +1,10 @@
 # 🚀 First integrated browser for VS Code editor with Claude Code, Codex, Gemini CLI and OpenCode support 🎆
 
+> **Want the full version?** [HoverDeck](https://open-vsx.org/extension/DenysDavydov/hoverdeck)
+> is AI Browser plus a chat of its own — Claude Code, Codex, Gemini CLI and more in one panel,
+> with terminals and workflows ([GitHub](https://github.com/Denis-Davidoff/hoverdeck)). It copies
+> your `aiBrowser.*` settings on first start, and the two can be installed side by side.
+
 - 🌐 **VS Code’s built-in browser or Google Chrome:** work in a native browser tab inside the
   editor where available, or let your assistant drive Google Chrome without a Chrome extension.
 - 🤖 **Your assistants, your way:** keep the Claude Code and Codex extensions, Gemini CLI or

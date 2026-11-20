@@ -2,6 +2,8 @@
 
 **1.0.2** — The AI Browser menu in the status bar has a **Full version** section with **Get the full version — HoverDeck**, which opens HoverDeck on Open VSX. It is hidden once HoverDeck is installed.
 
+**1.0.0** — The last build with the chat, which continues in HoverDeck. 1.0.1 removed it again (the notes under 0.10.0 below).
+
 **0.10.0** — The chat moved to its own extension, [HoverDeck](https://open-vsx.org/extension/DenysDavydov/hoverdeck), and AI Browser is the browser without it. This includes the chat panel, terminal tabs, the Chrome side panel, Exchange, keep-awake, voice messages and the Pi and OpenRouter agents. What stays:
 
 - the MCP server with its browser, Chrome and editor tools;
