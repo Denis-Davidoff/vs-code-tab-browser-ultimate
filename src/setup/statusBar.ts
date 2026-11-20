@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import type { BrowserController, ShareView } from '../browser/browserController';
 import { inUseMarker, sharedMarker, stripMarker } from '../browser/shareIndicator';
 import { plainInLabel, plainInMarkdown } from '../core/notifyText';
+import { refuse } from '../core/notify';
 import { normalizeAddress } from '../core/webUrl';
 import { pageTitle } from '../translate/translateText';
 import {
@@ -186,6 +187,9 @@ interface MenuItem extends vscode.QuickPickItem {
  * whenever a tab is focused, and a second copy here would be a longer menu
  * saying the same thing.
  */
+const hoverDeckId = 'DenysDavydov.hoverdeck';
+const hoverDeckUrl = 'https://open-vsx.org/extension/DenysDavydov/hoverdeck';
+
 async function showMenu(controller: BrowserController): Promise<void> {
 	const state = await browserApiState();
 	const items: MenuItem[] = [];
@@ -410,6 +414,23 @@ async function showMenu(controller: BrowserController): Promise<void> {
 		items.push({
 			label: vscode.l10n.t("$(circle-slash) Stop sharing everything"),
 			run: () => vscode.commands.executeCommand('aiBrowser.stopSharingTab'),
+		});
+	}
+
+	// The promo for HoverDeck, the full build with a chat of its own. AI Browser
+	// is the browser tools only since the chat moved there; once HoverDeck is
+	// installed there is nothing left to advertise.
+	if (!vscode.extensions.getExtension(hoverDeckId)) {
+		items.push({ label: vscode.l10n.t("Full version"), kind: vscode.QuickPickItemKind.Separator });
+		items.push({
+			label: vscode.l10n.t("$(rocket) Get the full version — HoverDeck"),
+			detail: vscode.l10n.t("AI Browser plus its own chat: Claude Code, Codex, Gemini and more in one panel, with terminals and workflows"),
+			run: async () => {
+				if (!await vscode.env.openExternal(vscode.Uri.parse(hoverDeckUrl))) {
+					await vscode.env.clipboard.writeText(hoverDeckUrl);
+					refuse(vscode.l10n.t("Could not open the browser — the HoverDeck link is on the clipboard"));
+				}
+			},
 		});
 	}
 
