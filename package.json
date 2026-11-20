@@ -2,7 +2,7 @@
 	"name": "tab-browser-ultimate",
 	"displayName": "AI Browser🏆 Claude + Codex + Gemini + OpenCode + Pi + OpenRouter",
 	"description": "Chat with browser, MCP for Chrome and embedded browser tab with AI capabilities, Claude, Codex, Gemini, OpenCode, Pi and OpenRouter integration (Qwen, LM Studio, Ollama, etc.)",
-	"version": "0.9.23",
+	"version": "1.0.0",
 	"enabledApiProposals": [
 		"externalUriOpener",
 		"browser"
@@ -1076,8 +1076,18 @@
 						"description": "Optional restrictions for Chrome and Exchange. Manage these in AI Browser Chat Settings → Connections & permissions. Supported actions are enabled unless explicitly disabled.",
 						"additionalProperties": false,
 						"properties": {
-							"chrome": { "type": "object", "additionalProperties": { "type": "boolean" } },
-							"exchange": { "type": "object", "additionalProperties": { "type": "boolean" } }
+							"chrome": {
+								"type": "object",
+								"additionalProperties": {
+									"type": "boolean"
+								}
+							},
+							"exchange": {
+								"type": "object",
+								"additionalProperties": {
+									"type": "boolean"
+								}
+							}
 						}
 					},
 					"aiBrowser.chat.tabLimit": {
@@ -1111,13 +1121,116 @@
 					},
 					"aiBrowser.chat.sound.name": {
 						"type": "string",
-						"enum": ["chime", "bell", "pop", "dingdong", "marimba", "harp", "kalimba", "glass", "bubble", "coin", "levelup", "sparkle", "sonar", "arcade", "droplet", "woodblock", "fanfare", "zen", "whistle", "synth", "lullaby", "triad", "ascend", "descend", "doorbell", "tick", "blip", "laser", "ufo", "boing", "piano", "celesta", "organ", "flute", "pluck", "gong", "twinkle", "heartbeat", "success", "notice", "trill", "jingle", "swoosh", "robot", "chirp", "harmony", "steel", "cosmic", "ping", "victory"],
+						"enum": [
+							"chime",
+							"bell",
+							"pop",
+							"dingdong",
+							"marimba",
+							"harp",
+							"kalimba",
+							"glass",
+							"bubble",
+							"coin",
+							"levelup",
+							"sparkle",
+							"sonar",
+							"arcade",
+							"droplet",
+							"woodblock",
+							"fanfare",
+							"zen",
+							"whistle",
+							"synth",
+							"lullaby",
+							"triad",
+							"ascend",
+							"descend",
+							"doorbell",
+							"tick",
+							"blip",
+							"laser",
+							"ufo",
+							"boing",
+							"piano",
+							"celesta",
+							"organ",
+							"flute",
+							"pluck",
+							"gong",
+							"twinkle",
+							"heartbeat",
+							"success",
+							"notice",
+							"trill",
+							"jingle",
+							"swoosh",
+							"robot",
+							"chirp",
+							"harmony",
+							"steel",
+							"cosmic",
+							"ping",
+							"victory"
+						],
 						"default": "chime",
 						"markdownDescription": "%configuration.chat.sound.name.description%"
 					},
 					"aiBrowser.chat.sound.githubRun": {
 						"type": "string",
-						"enum": ["none", "chime", "bell", "pop", "dingdong", "marimba", "harp", "kalimba", "glass", "bubble", "coin", "levelup", "sparkle", "sonar", "arcade", "droplet", "woodblock", "fanfare", "zen", "whistle", "synth", "lullaby", "triad", "ascend", "descend", "doorbell", "tick", "blip", "laser", "ufo", "boing", "piano", "celesta", "organ", "flute", "pluck", "gong", "twinkle", "heartbeat", "success", "notice", "trill", "jingle", "swoosh", "robot", "chirp", "harmony", "steel", "cosmic", "ping", "victory"],
+						"enum": [
+							"none",
+							"chime",
+							"bell",
+							"pop",
+							"dingdong",
+							"marimba",
+							"harp",
+							"kalimba",
+							"glass",
+							"bubble",
+							"coin",
+							"levelup",
+							"sparkle",
+							"sonar",
+							"arcade",
+							"droplet",
+							"woodblock",
+							"fanfare",
+							"zen",
+							"whistle",
+							"synth",
+							"lullaby",
+							"triad",
+							"ascend",
+							"descend",
+							"doorbell",
+							"tick",
+							"blip",
+							"laser",
+							"ufo",
+							"boing",
+							"piano",
+							"celesta",
+							"organ",
+							"flute",
+							"pluck",
+							"gong",
+							"twinkle",
+							"heartbeat",
+							"success",
+							"notice",
+							"trill",
+							"jingle",
+							"swoosh",
+							"robot",
+							"chirp",
+							"harmony",
+							"steel",
+							"cosmic",
+							"ping",
+							"victory"
+						],
 						"default": "success",
 						"title": "Sound When a Watched Actions Run Ends",
 						"markdownDescription": "%configuration.chat.sound.githubRun.description%"
@@ -1137,13 +1250,13 @@
 						"markdownDescription": "%configuration.chat.sound.repeat.description%"
 					},
 					"aiBrowser.chat.visibleTurns": {
-          "type": "integer",
-          "default": 20,
-          "minimum": 5,
-          "maximum": 200,
-          "markdownDescription": "%config.chat.visibleTurns.description%"
-        },
-        "aiBrowser.chat.notifications.enabled": {
+						"type": "integer",
+						"default": 20,
+						"minimum": 5,
+						"maximum": 200,
+						"markdownDescription": "%config.chat.visibleTurns.description%"
+					},
+					"aiBrowser.chat.notifications.enabled": {
 						"type": "boolean",
 						"default": true,
 						"title": "Notify When Agents Finish",
@@ -1162,16 +1275,36 @@
 					},
 					"aiBrowser.chat.remoteFilesChrome": {
 						"type": "string",
-						"enum": ["off", "read", "attach", "write"],
-						"enumDescriptions": ["No access", "Browse only", "Browse and attach", "Browse, attach and edit"],
+						"enum": [
+							"off",
+							"read",
+							"attach",
+							"write"
+						],
+						"enumDescriptions": [
+							"No access",
+							"Browse only",
+							"Browse and attach",
+							"Browse, attach and edit"
+						],
 						"default": "write",
 						"scope": "application",
 						"markdownDescription": "Project file access from Chrome. Controls Files and project attachments inside the conversation's working folder. Agent tool approvals and sandbox permissions are separate. Change this in VS Code only."
 					},
 					"aiBrowser.chat.remoteFilesWebsite": {
 						"type": "string",
-						"enum": ["off", "read", "attach", "write"],
-						"enumDescriptions": ["No access", "Browse only", "Browse and attach", "Browse, attach and edit"],
+						"enum": [
+							"off",
+							"read",
+							"attach",
+							"write"
+						],
+						"enumDescriptions": [
+							"No access",
+							"Browse only",
+							"Browse and attach",
+							"Browse, attach and edit"
+						],
 						"default": "write",
 						"scope": "application",
 						"markdownDescription": "Project file access from the connected website. Controls Files and project attachments inside the conversation's working folder. Agent tool approvals and sandbox permissions are separate. Change this in VS Code only."

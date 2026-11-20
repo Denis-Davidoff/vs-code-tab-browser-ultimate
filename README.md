@@ -1,5 +1,11 @@
 # 🚀 First integrated browser for VS Code editor with Claude Code, Codex, Gemini CLI, OpenCode, Pi and OpenRouter support 🎆
 
+> **AI Browser continues as [HoverDeck](https://open-vsx.org/extension/DenysDavydov/hoverdeck).**
+> 1.0.0 is the final AI Browser release: it keeps working, with no further features. The chat,
+> the Chrome side panel and the Exchange website continue in HoverDeck
+> ([GitHub](https://github.com/Denis-Davidoff/hoverdeck)), which copies your `aiBrowser.*`
+> settings on first start. The two can be installed side by side.
+
 - 🌐 **VS Code’s built-in browser or Google Chrome:** work in a native browser tab inside the
   editor where available, or let your assistant drive Google Chrome without a Chrome extension.
 - 🤖 **Your assistants, your way:** keep the Claude Code and Codex extensions or the Gemini CLI you
@@ -105,6 +111,12 @@ visible while recording. Files are temporary until saved; agents receive a file 
 For limits, settings and technical details, see [CLAUDE.md](CLAUDE.md#browser-video-recording).
 
 ## 📝 Changelog
+
+**1.0.0** — The final release of AI Browser. Its chat, Chrome side panel and Exchange website continue in **HoverDeck** ([Open VSX](https://open-vsx.org/extension/DenysDavydov/hoverdeck), [GitHub](https://github.com/Denis-Davidoff/hoverdeck)), which copies your `aiBrowser.*` settings on first start. AI Browser stays installable and keeps working; it gets no further features. The two can be installed side by side.
+
+**0.9.23** — With a conversation docked under a terminal, opening Skills, Activity or another composer tab no longer squeezes the terminal to nothing: it keeps about five lines of text and the docked messages give way instead. The composer tab row under a terminal sits closer to the border and the message box, and the terminal toolbar strip is a shade darker.
+
+**0.9.22** — Light theme fixes: quotes are a soft tinted box with a yellow edge instead of a dark block, and inline code inside code blocks no longer sits on a dark strip. Appearance → Light or Dark over an editor of the other kind now forces the right colours for quotes, code, keys, scrollbars, notices and the terminal; the terminal re-colours when you change the theme. Code boxes in the approval cards are visible in Light Modern. The chat's "+" has **Folder…** beside **File…**, and both pick several at once; the terminal's Insert has Folder… too. The Conversation tab above the message box is now **Prompts** (Alt+P): your messages in this chat, newest first, each with a jump to its answer. A terminal pinned to a conversation shows its message box, and **Show messages** brings the conversation above it; the terminal toolbar is one compact row with drawn tooltips and arrow-key navigation. A bell on running GitHub Actions runs plays a sound and shows a system notification when the run ends (`aiBrowser.chat.sound.githubRun`, `aiBrowser.chat.notifications.githubRun`). A selection copied from the chat keeps its formatting as Markdown and HTML. The Commit window can commit and push in one step, and the Branches window has **Create PR**. With the message box empty and text on the clipboard, Send turns into **Paste** in the same place. In the GitHub tab a merged branch no longer shows an unusable "Create pull request" row, and an unpushed branch's row opens the Branches window.
 
 **0.9.21** — Pinned tabs: click the chat tab already in front to pin it; it moves beside the other pinned tabs, gets a yellow underline and asks before closing. A new toolbar skill editor with a live button preview, sections, a prompt that grows with its text and a Markdown toolbar with Preview in every prompt. JSON and table cards get a proper search field and buttons, and JSON values are coloured by type. The Chrome side panel is 0.6.3. Fixes: ⌘B and ⌘K in the skill editor no longer also run VS Code shortcuts, and inserting a parameter into a prompt in Preview no longer types into the parameter's name.
 

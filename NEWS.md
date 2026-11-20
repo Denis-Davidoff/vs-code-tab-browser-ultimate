@@ -29,6 +29,10 @@ Browse, debug and test your pages in VS Code's own browser — and let Claude Co
 - $(location) **Page markers** — pin notes to page elements and send them to the agent as one prompt.
 - $(settings-gear) **Chat Settings** — use the gear at the top to edit prompts for commit messages, branch names and chat titles, or clean up temporary files.
 
+## 1.0.0 — 2026-11-20
+
+- **AI Browser continues as HoverDeck** — this is the last AI Browser release. The chat, the Chrome side panel and the Exchange website go on in [HoverDeck](https://open-vsx.org/extension/DenysDavydov/hoverdeck), which copies your settings on first start. AI Browser keeps working, and the two can be installed side by side.
+
 ## 0.9.23 — 2026-11-10
 
 - **A roomier docked terminal** — with its conversation docked under it, the terminal keeps about five lines of text when you open Skills, Activity or another composer tab; the messages above the box give way instead.

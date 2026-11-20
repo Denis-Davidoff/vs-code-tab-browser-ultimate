@@ -25,6 +25,8 @@ vscode-marketplace/**
 # is unused — the manifest names media/icon.png.
 ai-browser-instruct.jpg
 PUBLISHING.md
+# HoverDeck's readme template, kept in HoverDeck's repository as docs/readme-template.md.
+README.draft.md
 media/icon.svg
 # The voice helper ships compiled (bin/ai-browser-voice); its Swift source does not.
 native/**
@@ -39,3 +41,6 @@ deploy-exchange.sh
 
 # Sourcemaps: about 5 MB of the package, of use only for debugging a local build.
 **/*.map
+
+# Developer notes; links from the readme go to GitHub.
+docs/**
