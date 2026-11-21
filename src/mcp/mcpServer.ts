@@ -698,13 +698,13 @@ export class McpServer implements vscode.Disposable {
 				name: 'skill_list', title: 'List guides',
 				description: 'Lists the built-in guides to the browser tools (forms, signing in, iframes, common sites). Read one with skill_get before a task it covers.',
 				inputSchema: schema({}),
-				run: () => ({ skills: guideSummaries() }),
+				run: async () => ({ skills: guideSummaries() }),
 			},
 			{
 				name: 'skill_get', title: 'Read a guide',
 				description: 'Returns one built-in guide whole, by its name from skill_list.',
 				inputSchema: schema({ name: string('Guide name from skill_list') }, ['name']),
-				run: args => {
+				run: async args => {
 					const name = textArgument(args.name, 'name') ?? '';
 					const doc = guideDocument(name);
 					if (!doc) {

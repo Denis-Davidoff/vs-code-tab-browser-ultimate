@@ -25,7 +25,7 @@ const caller = { kind: 'claude' as const };
 /** Every tool name the server registers, from the source, so prompts and guides can be checked against it. */
 function registered(): Set<string> {
 	const names = new Set<string>();
-	for (const file of ['mcpServer.ts', 'chatTools.ts', 'terminalTools.ts']) {
+	for (const file of ['mcpServer.ts']) {
 		for (const m of readFileSync(`src/mcp/${file}`, 'utf8').matchAll(/\bname: '((?:browser|editor|chat|terminal|skill)_[a-z_]+)'/g)) {
 			names.add(m[1]);
 		}
