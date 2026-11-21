@@ -76,7 +76,7 @@ suite('dispatch', () => {
 
 	test('initialize advertises tools and names the workspace', async () => {
 		const result = (await call('initialize', {}))!.result as any;
-		assert.deepStrictEqual(result.capabilities, { tools: { listChanged: false } });
+		assert.deepStrictEqual(result.capabilities, { tools: { listChanged: false }, prompts: { listChanged: false } });
 		assert.strictEqual(result.serverInfo.version, '1.2.3');
 		assert.ok(result.instructions.includes('demo'));
 	});

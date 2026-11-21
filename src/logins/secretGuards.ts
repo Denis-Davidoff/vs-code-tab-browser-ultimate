@@ -43,6 +43,28 @@ export function isSecretField(attributes: Readonly<Record<string, string | undef
 }
 
 /**
+ * Whether a field is one the user fills in themselves, as `browser_forms` marks it:
+ * a secret by `isSecretField`, or a
+ * payment card's number, security code or expiry — by autocomplete token or by
+ * name as a word. A page that talks an agent into typing a password or a card
+ * into its own form has the value.
+ */
+export function isProtectedField(attributes: Readonly<Record<string, string | undefined>>): boolean {
+	if (isSecretField(attributes)) {
+		return true;
+	}
+	const autocomplete = (attributes.autocomplete ?? '').toLowerCase();
+	if (/(^|\s)cc-(number|csc|exp|exp-month|exp-year)(\s|$)/.test(autocomplete)) {
+		return true;
+	}
+	return [attributes.name, attributes.id].some(name => {
+		// Hyphens read as underscores (`card-number`, `cc-number`), camelCase split first.
+		const words = (name ?? '').replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().replace(/-/g, '_');
+		return /(^|[^a-z])(cvv2?|cvc2?|csc|card_?(number|num|no)|cc_?(number|num|no|csc|cvv|cvc)|credit_?card(?!_?(holder|name|type|brand))(_?(number|num|no))?|security_?code)([^a-z]|$)/.test(words);
+	});
+}
+
+/**
  * A selector reduced to what a selector engine sees, for the questions below:
  * comments gone, escapes decoded and strings kept apart.
  *
@@ -355,4 +377,241 @@ function redactTag(tag: string): string {
 		return tag;
 	}
 	return tag.replace(attributePattern, (whole, name: string) => name.toLowerCase() === 'value' ? '' : whole);
+}
+
+/** Elements dropped from cleaned markup with everything inside them. */
+const droppedWhole = new Set(['script', 'style', 'noscript']);
+/** Void elements dropped from cleaned markup: they carry nothing a reader needs. */
+const droppedVoid = new Set(['link', 'meta', 'base']);
+
+interface AttributeSpan {
+	readonly start: number;
+	readonly end: number;
+	readonly name: string;
+	readonly value: string | undefined;
+}
+
+/**
+ * The attributes of a start tag `tag` (`<name …>`), read with the tokenizer's
+ * own states, the same ones {@link tagEnd} walks — never a regular expression
+ * (#262, #506): a quote opens a value only after `=`, and an `=` before any
+ * name character is part of the name.
+ */
+function attributeSpans(tag: string, from: number): AttributeSpan[] {
+	const spans: AttributeSpan[] = [];
+	const space = (c: string) => c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f';
+	let at = from;
+	while (at < tag.length) {
+		while (at < tag.length && (space(tag[at]) || tag[at] === '/')) {
+			at++;
+		}
+		if (at >= tag.length || tag[at] === '>') {
+			break;
+		}
+		const start = at++;
+		while (at < tag.length && !space(tag[at]) && tag[at] !== '/' && tag[at] !== '>' && tag[at] !== '=') {
+			at++;
+		}
+		const nameEnd = at;
+		let probe = at;
+		while (probe < tag.length && space(tag[probe])) {
+			probe++;
+		}
+		if (tag[probe] !== '=') {
+			spans.push({ start, end: nameEnd, name: tag.slice(start, nameEnd).toLowerCase(), value: undefined });
+			continue;
+		}
+		at = probe + 1;
+		while (at < tag.length && space(tag[at])) {
+			at++;
+		}
+		let value: string;
+		if (tag[at] === '"' || tag[at] === '\'') {
+			const quote = tag[at];
+			const close = tag.indexOf(quote, at + 1);
+			const stop = close === -1 ? tag.length : close;
+			value = tag.slice(at + 1, stop);
+			at = close === -1 ? tag.length : close + 1;
+		} else {
+			const begin = at;
+			while (at < tag.length && !space(tag[at]) && tag[at] !== '>') {
+				at++;
+			}
+			value = tag.slice(begin, at);
+		}
+		spans.push({ start, end: at, name: tag.slice(start, nameEnd).toLowerCase(), value });
+	}
+	return spans;
+}
+
+/** An attribute cleaned markup leaves out: handlers, inline styles, data attributes. */
+function droppedAttribute(name: string): boolean {
+	return name.startsWith('on') || name.startsWith('data-') || name === 'style' || name === 'nonce' || name === 'integrity';
+}
+
+/** A start tag rebuilt from the attributes worth keeping, a secret's value dropped. */
+function cleanTag(tag: string, name: string): string {
+	const spans = attributeSpans(tag, name.length + 1);
+	const attributes: Record<string, string> = {};
+	for (const s of spans) {
+		attributes[s.name] = s.value ?? '';
+	}
+	const secret = name === 'input' && 'value' in attributes && isSecretField(attributes);
+	let out = `<${name}`;
+	for (const s of spans) {
+		if (droppedAttribute(s.name) || (secret && s.name === 'value')) {
+			continue;
+		}
+		if (s.value !== undefined && s.value.length > 200 && /^\s*data:/i.test(s.value)) {
+			out += ` ${s.name}="data:…"`;
+			continue;
+		}
+		out += ` ${tag.slice(s.start, s.end)}`;
+	}
+	return out + (/\/\s*>$/.test(tag) ? '/>' : '>');
+}
+
+/**
+ * Markup cut down for a model to read: comments, `script`, `style`,
+ * `noscript`, `template` and `link`/`meta` gone with their contents, the inside
+ * of an inline `svg` dropped (its paths are noise; the tag and its label stay),
+ * event handlers, inline styles and `data-*` attributes removed, long `data:`
+ * URLs shortened, secret values redacted as {@link redactSecretValues} does, and
+ * blank lines outside `pre` and `textarea` squeezed.
+ *
+ * Read as HTML by the same scanner as the redaction — a `<` inside a comment,
+ * CDATA or raw text is not a tag, a tag ends at the `>` its quotes allow —
+ * so the page cannot hide markup from the cleaning by quoting it oddly.
+ */
+export function cleanHtml(html: string): string {
+	let result = '';
+	let i = 0;
+	// Inside an `svg` (tag kept) or a `template` (tag dropped) nothing is copied;
+	// nesting of the same element is counted so the right end tag closes it.
+	let skip: 'svg' | 'template' | undefined;
+	let svgDepth = 0;
+	let preDepth = 0;
+	const text = (chunk: string) => {
+		if (svgDepth > 0) {
+			return;
+		}
+		result += preDepth > 0 ? chunk : squeezeBlankLines(chunk);
+	};
+	while (i < html.length) {
+		const open = html.indexOf('<', i);
+		if (open === -1) {
+			text(html.slice(i));
+			break;
+		}
+		text(html.slice(i, open));
+		if (html.startsWith('<!--', open)) {
+			const end = html.indexOf('-->', open + 4);
+			i = end === -1 ? html.length : end + 3;
+			continue;
+		}
+		if (html.startsWith('<![CDATA[', open)) {
+			const end = html.indexOf(']]>', open + 9);
+			i = end === -1 ? html.length : end + 3;
+			continue;
+		}
+		const close = /^<\/([a-zA-Z][^\s/>]*)/.exec(html.slice(open, open + 64))?.[1]?.toLowerCase();
+		const name = close ? undefined : /^<([a-zA-Z][^\s/>]*)/.exec(html.slice(open, open + 64))?.[1]?.toLowerCase();
+		if (!name && !close && !/^<[!/?]/.test(html.slice(open, open + 2))) {
+			// A `<` that starts no tag is text, as the tokenizer reads it.
+			text('<');
+			i = open + 1;
+			continue;
+		}
+		if (!name) {
+			const gt = html.indexOf('>', open + 1);
+			const stop = gt === -1 ? html.length : gt + 1;
+			if (skip && close === skip) {
+				svgDepth--;
+				if (svgDepth === 0) {
+					result += skip === 'svg' ? '</svg>' : '';
+					skip = undefined;
+				}
+			} else if (close && svgDepth === 0) {
+				if ((close === 'pre' || close === 'textarea') && preDepth > 0) {
+					preDepth--;
+				}
+				result += `</${close}>`;
+			} else if (!close && svgDepth === 0 && /^<!doctype/i.test(html.slice(open, open + 9))) {
+				result += html.slice(open, stop);
+			}
+			i = stop;
+			continue;
+		}
+		const end = tagEnd(html, open + name.length + 1);
+		const tag = html.slice(open, end);
+		const selfClosing = /\/\s*>$/.test(tag);
+		i = end;
+		if (droppedWhole.has(name) || name === 'plaintext' || rawText.has(name)) {
+			if (name === 'plaintext') {
+				break;
+			}
+			const closing = rawTextClose(html, name, i);
+			if (closing === -1) {
+				break;
+			}
+			const gt = html.indexOf('>', closing);
+			i = gt === -1 ? html.length : gt + 1;
+			if (!droppedWhole.has(name) && svgDepth === 0) {
+				// An iframe, xmp, noembed or noframes: keep the element, not its raw text.
+				result += cleanTag(tag, name) + `</${name}>`;
+			}
+			continue;
+		}
+		if (svgDepth > 0) {
+			if (name === skip && !selfClosing) {
+				svgDepth++;
+			}
+			continue;
+		}
+		if (name === 'template') {
+			if (!selfClosing) {
+				skip = 'template';
+				svgDepth = 1;
+			}
+			continue;
+		}
+		if (droppedVoid.has(name)) {
+			continue;
+		}
+		result += cleanTag(tag, name);
+		if (name === 'svg' && !selfClosing) {
+			skip = 'svg';
+			svgDepth = 1;
+		} else if ((name === 'pre' || name === 'textarea') && !selfClosing) {
+			preDepth++;
+		}
+	}
+	return result.trim();
+}
+
+/**
+ * Runs of blank lines in text squeezed to one line break, without a regular
+ * expression: `\s*\n\s*\n` backtracks quadratically over a long run of
+ * spaces before a single newline, and the text is the page's.
+ */
+function squeezeBlankLines(chunk: string): string {
+	if (!chunk.includes('\n')) {
+		return chunk;
+	}
+	const lines = chunk.split('\n');
+	const out: string[] = [];
+	let blank = false;
+	for (const line of lines) {
+		if (line.trim() === '') {
+			blank = true;
+			continue;
+		}
+		out.push((blank && out.length ? '\n' : '') + line.trimEnd());
+		blank = false;
+	}
+	if (!out.length) {
+		return '\n';
+	}
+	// A line break at either end separates this text from the tag beside it.
+	return (lines[0].trim() === '' ? '\n' : '') + out.join('\n') + (blank ? '\n' : '');
 }

@@ -9,7 +9,8 @@ import * as vscode from 'vscode';
 import { BrowserController } from '../browser/browserController';
 import type { BrowserRecording } from '../browser/recording';
 import { modelFrameLimits } from '../browser/screenshotFrames';
-import { defaultSegmentChars, maxSegmentChars, parseReplacements, segmentBudget } from '../translate/translateText';
+import { defaultSegmentChars, maxSegmentChars, pageTitle, parseReplacements, resolveLanguage, segmentBudget, translationPrompt } from '../translate/translateText';
+import { plainInPrompt } from '../core/notifyText';
 import { generateUuid } from '../core/uuid';
 import { EditorTools } from '../editor/editorTools';
 import { lineArgument } from '../editor/editorText';
@@ -17,8 +18,11 @@ import {
 	authorizeRequest, classifyClient, dispatch, initializeClientName, invalidRequest,
 	invalidRequestReason, isNotification, normalisePath, number, parseError, schema, string,
 	stringOrUndefined, numberOrUndefined, numberArgument, textArgument, toolContent,
-	type Caller, type ClientKind, type ContentBlock, type DispatchContext, type Tool,
+	type Caller, type ClientKind, type ContentBlock, type DispatchContext, type Progress, type Prompt, type Tool,
 } from './mcpProtocol';
+import { toolHints, toolIcons } from './toolMeta';
+import { guideDocument, guideSummaries } from './browserGuides';
+import { browserPrompts, skillPromptsFor, type PromptPort } from './mcpPrompts';
 
 /**
  * Streamable HTTP transport for the MCP server, written by hand.
@@ -35,6 +39,8 @@ const drainLimitBytes = 16 * 1024 * 1024;
 const clientIdleMs = 10 * 60 * 1000;
 /** How many `Mcp-Session-Id`s are remembered before the oldest is forgotten. */
 const sessionLimit = 256;
+/** How often a long-running call reports that it is still waiting, when the client asked for progress. */
+const heartbeatMs = 5000;
 
 /**
  * `browser_scroll`'s `to`, refused when it is anything but an edge. Read as
@@ -63,6 +69,70 @@ export interface ClientSet {
 	readonly openrouter: boolean;
 	readonly opencode: boolean;
 	readonly pi: boolean;
+}
+
+/**
+ * Output schemas for the two tools a client most often reads by field. Loose on
+ * purpose (`additionalProperties`): the results grow fields, and a strict schema
+ * would make a client reject an answer it could have used. Only the fields a
+ * caller branches on are named.
+ */
+const tabSummary = {
+	type: 'object',
+	properties: { id: { type: 'string' }, url: { type: 'string' }, title: { type: 'string' } },
+	additionalProperties: true,
+};
+const stateOutputSchema: Record<string, unknown> = {
+	type: 'object',
+	properties: {
+		available: { type: 'boolean', description: 'Whether any browser can be driven at all.' },
+		openTabs: { type: 'number' },
+		tab: tabSummary,
+		selection: { type: 'string', description: 'How the tab was chosen.' },
+		sharedByUser: { type: 'boolean' },
+		sharedTabClosed: { type: 'boolean' },
+		reason: { type: 'string' },
+	},
+	additionalProperties: true,
+};
+const tabsOutputSchema: Record<string, unknown> = {
+	type: 'object',
+	properties: {
+		selection: { type: 'string' },
+		tabs: { type: 'array', items: tabSummary },
+		otherTabsInWindow: { type: 'number' },
+		available: { type: 'boolean' },
+	},
+	additionalProperties: true,
+};
+
+/** `browser_text`'s `format`: absent is text; anything but the two names is refused (#210). */
+function textFormatArgument(value: unknown): boolean {
+	if (value === undefined || value === null || value === 'text') {
+		return false;
+	}
+	if (value === 'markdown') {
+		return true;
+	}
+	throw new Error('format must be "text" or "markdown".');
+}
+
+/** `browser_fill_form`'s fields, each read like browser_fill's arguments; a malformed entry is refused, not skipped (#210). */
+function formFieldsArgument(value: unknown): { selector: string; value: string }[] {
+	if (!Array.isArray(value)) {
+		throw new Error('fields must be an array of { selector, value }.');
+	}
+	return value.map((entry, i) => {
+		if (!entry || typeof entry !== 'object') {
+			throw new Error(`fields[${i}] must be { selector, value }.`);
+		}
+		const e = entry as Record<string, unknown>;
+		const selector = textArgument(e.selector, `fields[${i}].selector`);
+		if (!selector) {
+			throw new Error(`fields[${i}].selector is missing.`);
+		}
+		return { selector, value: textArgument(e.value, `fields[${i}].value`) ?? '' };
+	});
 }
 
 export class McpServer implements vscode.Disposable {
@@ -105,7 +175,13 @@ export class McpServer implements vscode.Disposable {
 	 * return it in the response header, and MCP clients echo it back.
 	 */
 	private readonly _sessionKinds: Map<string, ClientKind>;
-
+	/**
+	 * `Mcp-Session-Id` → the protocol version it negotiated, which decides the
+	 * tool fields it is sent (`listedTool`). Per instance on purpose: a session
+	 * this instance never saw is answered as the default version, which is what
+	 * an older client that never echoed the header was answered with anyway.
+	 */
+	private readonly _sessionVersions = new Map<string, string>();
 
 	constructor(
 		private readonly browser: BrowserController,
@@ -129,8 +205,15 @@ export class McpServer implements vscode.Disposable {
 		private readonly _recording?: BrowserRecording,
 	) {
 		this._sessionKinds = sessionKinds;
-		this._tools = this._buildTools();
+		// Hints and icons are attached here, from one table, so a tool added to
+		// `_buildTools` cannot ship without them: `toolMeta.test.ts` fails first.
+		this._tools = this._buildTools().map(tool => ({ ...tool, annotations: toolHints[tool.name], icons: toolIcons(tool.name) }));
+		this._promptPortValue = this._promptPort();
+		this._prompts = browserPrompts(this._promptPortValue);
 	}
+
+	private readonly _promptPortValue: PromptPort;
+	private readonly _prompts: readonly Prompt[];
 
 	public get token(): string {
 		return this._token;
@@ -347,6 +430,16 @@ export class McpServer implements vscode.Disposable {
 				}
 			}
 			res.setHeader('mcp-session-id', sessionId);
+			const version = stringOrUndefined(request.params?.protocolVersion);
+			if (version) {
+				this._sessionVersions.set(sessionId, version);
+				if (this._sessionVersions.size > sessionLimit) {
+					const oldest = this._sessionVersions.keys().next().value;
+					if (oldest !== undefined) {
+						this._sessionVersions.delete(oldest);
+					}
+				}
+			}
 		}
 
 		this._noteActivity(kind);
@@ -390,10 +483,25 @@ export class McpServer implements vscode.Disposable {
 			this._calls.set(key, abort);
 			res.on('close', onClose);
 		}
+		// **Progress turns the answer into an event stream, lazily.** Streamable
+		// HTTP lets a POST be answered with `text/event-stream` carrying
+		// notifications before the response. Only a `tools/call` whose client
+		// sent a `progressToken` and accepts the stream gets one, and only once
+		// the tool first reports: every other call is answered as plain JSON as
+		// before, so a client that never asks sees no change at all.
+		const stream = this._progressStream(req, res, request);
+		const tool = request.method === 'tools/call' ? this._tools.find(t => t.name === request.params?.name) : undefined;
+		const heartbeat = stream && tool?.longRunning
+			? setInterval(() => stream.report(Number.NaN, undefined, 'Still waiting'), heartbeatMs)
+			: undefined;
+		const version = sessionId ? this._sessionVersions.get(sessionId) : stringOrUndefined(request.params?.protocolVersion);
 		let response: Awaited<ReturnType<typeof dispatch>>;
 		try {
-			response = await dispatch(request, this._context(), caller, abort?.signal);
+			response = await dispatch(request, this._context(version, caller), caller, abort?.signal, stream?.report);
 		} finally {
+			if (heartbeat) {
+				clearInterval(heartbeat);
+			}
 			if (abort) {
 				res.off('close', onClose);
 				if (this._calls.get(key) === abort) {
@@ -409,7 +517,62 @@ export class McpServer implements vscode.Disposable {
 			return;
 		}
 
+		if (stream?.started()) {
+			stream.finish(response);
+			return;
+		}
 		this._respond(res, 200, response);
+	}
+
+	/**
+	 * The progress reporter for one call, or `undefined` when the call may not
+	 * have one. Nothing is written until the first report; from then on the
+	 * response is an SSE stream and `finish` sends the result as its last event.
+	 */
+	private _progressStream(req: http.IncomingMessage, res: http.ServerResponse, request: { method?: unknown; params?: any }) {
+		if (request.method !== 'tools/call') {
+			return undefined;
+		}
+		const token = request.params?._meta?.progressToken;
+		if (typeof token !== 'string' && !(typeof token === 'number' && Number.isFinite(token))) {
+			return undefined;
+		}
+		const accept = String(req.headers.accept ?? '');
+		if (!accept.includes('text/event-stream')) {
+			return undefined;
+		}
+		let open = false;
+		let count = 0;
+		const send = (message: unknown) => {
+			if (!res.writableEnded && !res.destroyed) {
+				res.write(`event: message\ndata: ${JSON.stringify(message)}\n\n`);
+			}
+		};
+		const report: Progress = (progress, total, message) => {
+			if (res.writableEnded || res.destroyed) {
+				return;
+			}
+			if (!open) {
+				open = true;
+				res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
+			}
+			// The spec wants `progress` to grow with every notification, so a
+			// heartbeat (no figure of its own) and a tool that reports the same
+			// figure twice both move it on by a little.
+			count = Math.max(count + 0.001, Number.isFinite(progress) ? progress : count + 1);
+			send({
+				jsonrpc: '2.0', method: 'notifications/progress',
+				params: { progressToken: token, progress: count, ...(total !== undefined ? { total } : {}), ...(message ? { message } : {}) },
+			});
+		};
+		return {
+			report,
+			started: () => open,
+			finish: (response: unknown) => {
+				send(response);
+				res.end();
+			},
+		};
 	}
 
 	private _readBody(req: http.IncomingMessage): Promise<string> {
@@ -449,8 +612,32 @@ export class McpServer implements vscode.Disposable {
 		});
 	}
 
-	private _context(): DispatchContext {
-		return { serverVersion: this._version, workspaceName: this._folderName, tools: this._tools };
+	/** What the prompts need of the window, so `mcpPrompts.ts` stays a leaf. */
+	private _promptPort(): PromptPort {
+		return {
+			server: 'ai-browser',
+			product: 'AI Browser',
+			page: (tabId, caller) => {
+				// The caller's share and access rules, as a tool call would meet them:
+				// a prompt must not name a tab the caller could not act on.
+				const tab = this.browser.promptTab(caller, tabId);
+				return tab ? { title: pageTitle(tab.title, tab.url), url: tab.url, tabId: this.browser.tabIdOf(tab) } : undefined;
+			},
+			translate: (language, page) => translationPrompt(resolveLanguage({ name: language }),
+				{ ...page, title: plainInPrompt(page.title ?? page.url) }),
+			// AI Browser has no toolbar skill catalogue: no skill_<name> prompts.
+			skills: () => [],
+			skill: (_caller, name) => { throw new Error(`No skill is named "${name}".`); },
+			plain: (text, limit) => plainInPrompt(text, limit),
+		};
+	}
+
+	private _context(protocolVersion?: string, caller?: Caller): DispatchContext {
+		return {
+			serverVersion: this._version, workspaceName: this._folderName, tools: this._tools,
+			protocolVersion,
+			prompts: caller ? [...this._prompts, ...skillPromptsFor(this._promptPortValue, caller)] : this._prompts,
+		};
 	}
 
 	private _buildTools(): readonly Tool[] {
@@ -461,6 +648,7 @@ export class McpServer implements vscode.Disposable {
 				description: 'Reports whether a page is open in the integrated browser, which tab the tools are acting on, '
 					+ 'and how that tab was chosen. Call this first.',
 				inputSchema: schema({}),
+				outputSchema: stateOutputSchema,
 				run: (_args, caller) => browser.state(caller),
 			},
 			{
@@ -470,6 +658,7 @@ export class McpServer implements vscode.Disposable {
 					+ 'Otherwise every open tab is listed, and you may pass an id to browser_select_tab to work on '
 					+ 'one of them. annotationTabs lists Chrome side-panel tabs accessible to this conversation for annotations only; pass their chrome-annotations: ID explicitly to browser_annotations_*.',
 				inputSchema: schema({}),
+				outputSchema: tabsOutputSchema,
 				run: (_args, caller) => browser.tabs(caller),
 			},
 			{
@@ -497,6 +686,32 @@ export class McpServer implements vscode.Disposable {
 					},
 				}, ['url']),
 				run: (args, caller) => browser.navigate(stringOrUndefined(args.url) ?? '', args.newTab === true, caller),
+			},
+			{
+				name: 'browser_close_tab', title: 'Close a tab',
+				description: 'Closes one browser tab by its id from browser_tabs. Close only tabs you opened or the user asked you to close; '
+					+ 'a tab the user shared with you, or another conversation\'s tab, is refused.',
+				inputSchema: schema({ id: string('Tab id from browser_tabs') }, ['id']),
+				run: (args, caller) => browser.closeTab(textArgument(args.id, 'id') ?? '', caller),
+			},
+			{
+				name: 'skill_list', title: 'List guides',
+				description: 'Lists the built-in guides to the browser tools (forms, signing in, iframes, common sites). Read one with skill_get before a task it covers.',
+				inputSchema: schema({}),
+				run: () => ({ skills: guideSummaries() }),
+			},
+			{
+				name: 'skill_get', title: 'Read a guide',
+				description: 'Returns one built-in guide whole, by its name from skill_list.',
+				inputSchema: schema({ name: string('Guide name from skill_list') }, ['name']),
+				run: args => {
+					const name = textArgument(args.name, 'name') ?? '';
+					const doc = guideDocument(name);
+					if (!doc) {
+						throw new Error(`No guide is named "${name}". Available: ${guideSummaries().map(g => g.name).join(', ')}.`);
+					}
+					return doc;
+				},
 			},
 			{
 				name: 'browser_frames', title: 'List frames',
@@ -570,16 +785,26 @@ export class McpServer implements vscode.Disposable {
 			},
 			{
 				name: 'browser_html', title: 'Read HTML',
-				description: 'Outer HTML of the whole document, or of the first element matching a CSS selector.',
-				inputSchema: schema({ selector: string('Optional CSS selector'), frameId: frameIdArgument }),
-				run: (args, caller) => browser.html(stringOrUndefined(args.selector), textArgument(args.frameId, 'frameId'), caller),
+				description: 'Outer HTML of the whole document, or of the first element matching a CSS selector. '
+					+ 'Pass clean: true for markup cut down to read: no scripts, styles, comments, svg paths, event handlers or data- attributes.',
+				inputSchema: schema({
+					selector: string('Optional CSS selector'),
+					clean: { type: 'boolean', description: 'Strip scripts, styles, comments and noise attributes.' },
+					frameId: frameIdArgument,
+				}),
+				run: (args, caller) => browser.html(stringOrUndefined(args.selector), textArgument(args.frameId, 'frameId'), caller, args.clean === true),
 			},
 			{
 				name: 'browser_text', title: 'Read text',
 				description: 'Visible text of the page body, or of the first element matching a CSS selector. '
 					+ 'Text inside frames is not included: when the page has frames the result lists them, and frameId reads one.',
-				inputSchema: schema({ selector: string('Optional CSS selector'), frameId: frameIdArgument }),
-				run: (args, caller) => browser.text(stringOrUndefined(args.selector), textArgument(args.frameId, 'frameId'), caller),
+				inputSchema: schema({
+					selector: string('Optional CSS selector'),
+					format: { type: 'string', enum: ['text', 'markdown'], description: 'text (default) or markdown, which keeps headings, lists, links and tables.' },
+					frameId: frameIdArgument,
+				}),
+				run: (args, caller) => browser.text(stringOrUndefined(args.selector), textArgument(args.frameId, 'frameId'), caller,
+					textFormatArgument(args.format)),
 			},
 			{
 				name: 'browser_text_segments', title: 'Text to translate',
@@ -754,11 +979,54 @@ export class McpServer implements vscode.Disposable {
 					textArgument(args.frameId, 'frameId'), caller, signal),
 			},
 			{
+				name: 'browser_forms', title: 'List form fields',
+				description: 'Lists the forms on the page and their fields: a selector for each, its label, type, whether it is required, '
+					+ 'a choice\'s options, and whether it is filled — never a field\'s value. Fields marked protected (passwords, one-time codes, '
+					+ 'cards) are for the user to type. Then fill them with browser_fill_form.',
+				inputSchema: schema({ frameId: frameIdArgument }),
+				run: (args, caller) => browser.forms(textArgument(args.frameId, 'frameId'), caller),
+			},
+			{
+				name: 'browser_fill_form', title: 'Fill a form',
+				description: 'Fills several fields in one call, in order, each the way browser_fill does, and reports per field what the page '
+					+ 'now reads or why it was refused. Does not submit: press the submit button with browser_click once the user agrees.',
+				inputSchema: schema({
+					fields: {
+						type: 'array',
+						description: 'The fields to fill, in order: { selector, value } each (selectors from browser_forms).',
+						items: schema({ selector: string('CSS selector of the field'), value: string('Value to set') }, ['selector', 'value']),
+					},
+					frameId: frameIdArgument,
+				}, ['fields']),
+				run: (args, caller, signal) => browser.fillForm(formFieldsArgument(args.fields), textArgument(args.frameId, 'frameId'), caller, signal),
+			},
+			{
+				name: 'browser_wait_for_login', title: 'Wait for sign-in', longRunning: true,
+				description: 'Waits while the user signs in themselves (you never type passwords): done when the page has no visible password '
+					+ 'field any more, or when the text or selector you name appears. Follows the tab across redirects and two-step sign-ins. '
+					+ 'Default timeout two minutes.',
+				inputSchema: schema({
+					text: string('Text that shows the user is signed in (optional)'),
+					selector: string('Selector that shows the user is signed in (optional)'),
+					timeoutMs: number('How long to wait, default 120000, at most 600000'),
+					frameId: frameIdArgument,
+				}),
+				run: (args, caller, signal) => browser.waitForLogin(
+					textArgument(args.text, 'text') || undefined,
+					stringOrUndefined(args.selector),
+					Math.min(numberOrUndefined(args.timeoutMs) ?? 120_000, 600_000),
+					textArgument(args.frameId, 'frameId'),
+					caller,
+					signal),
+			},
+			{
 				name: 'browser_wait_for', title: 'Wait for',
-				description: 'Waits until a selector matches, or a piece of text appears on the page.',
+				description: 'Waits until a selector matches, or a piece of text appears on the page. '
+					+ 'Pass ready: true to wait until a single-page app stops changing (alone, or after the selector or text).',
 				inputSchema: schema({
 					selector: string('CSS selector to wait for'),
 					text: string('Text to wait for'),
+					ready: { type: 'boolean', description: 'Wait until the page stops changing for a moment.' },
 					timeoutMs: number('How long to wait, default 10000'),
 					frameId: frameIdArgument,
 				}),
@@ -769,7 +1037,8 @@ export class McpServer implements vscode.Disposable {
 					numberOrUndefined(args.timeoutMs) ?? 10_000,
 					textArgument(args.frameId, 'frameId'),
 					caller,
-					signal),
+					signal,
+					args.ready === true),
 			},
 			{
 				name: 'browser_scroll', title: 'Scroll',

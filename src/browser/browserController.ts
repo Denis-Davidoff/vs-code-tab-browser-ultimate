@@ -12,7 +12,7 @@ import type { RemoteBrowserInput } from './remoteBrowserProtocol';
 import { extractElementData, renderElementMarkdown } from '../elements/elementContext';
 import { tabs as tabSource } from './tabSource';
 import { legacyMarkerRemoval, stripMarker, stripMarkerFromHtml } from './shareIndicator';
-import { comparesFieldValue, isSecretField, redactSecretValues } from '../logins/secretGuards';
+import { cleanHtml, comparesFieldValue, isProtectedField, isSecretField, redactSecretValues } from '../logins/secretGuards';
 import { encodeJpeg } from './jpegEncode';
 import { decodePng, rowsOf } from './pngDecode';
 import { fitBands, modelJpegQuality, pixelRatios, planFullPage, planViewport, type Rect } from './screenshotFrames';
@@ -891,6 +891,9 @@ const waitForGraceMs = 1_000;
 /** The pause between two checks of `waitFor`, kept on the host's clock, never the page's. */
 const waitForPollMs = 100;
 
+/** Rounds in a row the page must look the same for `browser_wait_for` with `ready` (about 300 ms at `waitForPollMs`). */
+const readyQuietRounds = 3;
+
 /**
  * Whether an evaluation failed because its document went away — a navigation
  * — rather than because of anything the page did. Measured in Chrome 153: a
@@ -954,6 +957,111 @@ function sameTarget(a: ShareTarget, b: ShareTarget): boolean {
 function literal(value: unknown): string {
 	return JSON.stringify(value ?? null);
 }
+
+/**
+ * `browser_text` with `format: 'markdown'`: the visible page as Markdown —
+ * headings, lists, links (http and https only), code, quotes, tables — so a
+ * model keeps the structure `innerText` flattens. Runs in the page; reads text
+ * nodes, `alt` and `href` only, never a form field's value. Hidden elements are
+ * skipped (`checkVisibility`), and the walk stops at 20 000 elements or
+ * 200 000 characters.
+ *
+ * A template literal: no backtick inside, and no backslash escapes — line
+ * breaks are `NL`, made from a char code.
+ */
+const markdownFunctionDeclaration = `function (sel) {
+	const NL = String.fromCharCode(10);
+	const root = sel ? document.querySelector(sel) : document.body;
+	if (!root) { throw new Error('No element matches ' + sel); }
+	const skip = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'CANVAS', 'INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'BUTTON', 'IFRAME', 'OBJECT', 'HEAD']);
+	const blocks = new Set(['P', 'DIV', 'SECTION', 'ARTICLE', 'MAIN', 'HEADER', 'FOOTER', 'NAV', 'ASIDE', 'FORM', 'FIELDSET', 'FIGURE', 'FIGCAPTION', 'DL', 'DT', 'DD', 'DETAILS', 'SUMMARY', 'ADDRESS']);
+	let out = '';
+	let seen = 0;
+	let cut = false;
+	const room = () => out.length < 200000 && seen < 20000;
+	const one = s => s.split(NL).join(' ').split(String.fromCharCode(9)).join(' ').replace(/ {2,}/g, ' ');
+	const visible = el => !el.checkVisibility || el.checkVisibility({ visibilityProperty: true });
+	const inline = (node) => {
+		let text = '';
+		for (const child of node.childNodes) {
+			if (!room()) { cut = true; break; }
+			if (child.nodeType === 3) { text += one(child.data); continue; }
+			if (child.nodeType !== 1) { continue; }
+			seen++;
+			const tag = child.localName.toUpperCase();
+			if (skip.has(tag) || !visible(child)) { continue; }
+			if (tag === 'BR') { text += ' '; continue; }
+			if (tag === 'IMG') { const alt = child.getAttribute('alt'); if (alt) { text += '[image: ' + one(alt) + ']'; } continue; }
+			const inner = inline(child).trim();
+			if (!inner) { continue; }
+			if (tag === 'A') {
+				const href = child.href || '';
+				text += href.startsWith('http:') || href.startsWith('https:') ? '[' + inner + '](' + href + ')' : inner;
+			} else if (tag === 'STRONG' || tag === 'B') { text += '**' + inner + '**'; }
+			else if (tag === 'EM' || tag === 'I') { text += '*' + inner + '*'; }
+			else if (tag === 'CODE' || tag === 'KBD' || tag === 'SAMP') { text += String.fromCharCode(96) + inner + String.fromCharCode(96); }
+			else { text += ' ' + inner + ' '; }
+		}
+		return text.replace(/ {2,}/g, ' ');
+	};
+	const emit = (line) => { if (line.trim()) { out += line.trimEnd() + NL + NL; } };
+	const block = (node, depth) => {
+		for (const child of node.childNodes) {
+			if (!room()) { cut = true; return; }
+			if (child.nodeType === 3) { if (child.data.trim()) { emit(one(child.data).trim()); } continue; }
+			if (child.nodeType !== 1) { continue; }
+			seen++;
+			const tag = child.localName.toUpperCase();
+			if (skip.has(tag) || !visible(child)) { continue; }
+			const level = /^H[1-6]$/.test(tag) ? Number(tag[1]) : 0;
+			if (level) { emit('#'.repeat(level) + ' ' + inline(child).trim()); continue; }
+			if (tag === 'UL' || tag === 'OL') {
+				let n = 0;
+				for (const li of child.children) {
+					if (li.localName !== 'li' || !visible(li)) { continue; }
+					n++;
+					const mark = tag === 'OL' ? n + '. ' : '- ';
+					const own = inline({ childNodes: [...li.childNodes].filter(c => !(c.nodeType === 1 && (c.localName === 'ul' || c.localName === 'ol'))) }).trim();
+					out += '  '.repeat(depth) + mark + own + NL;
+					for (const sub of li.children) { if (sub.localName === 'ul' || sub.localName === 'ol') { block({ childNodes: [sub] }, depth + 1); } }
+				}
+				if (depth === 0) { out += NL; }
+				continue;
+			}
+			if (tag === 'PRE') {
+				const fence = String.fromCharCode(96).repeat(3);
+				out += fence + NL + (child.innerText || child.textContent || '').trimEnd() + NL + fence + NL + NL;
+				continue;
+			}
+			if (tag === 'BLOCKQUOTE') {
+				emit(inline(child).trim().split(NL).map(l => '> ' + l).join(NL));
+				continue;
+			}
+			if (tag === 'TABLE') {
+				const rows = [...child.querySelectorAll('tr')].slice(0, 200).filter(visible);
+				rows.forEach((tr, i) => {
+					const cells = [...tr.children].filter(c => c.localName === 'td' || c.localName === 'th').map(c => inline(c).trim().split('|').join('/'));
+					out += '| ' + cells.join(' | ') + ' |' + NL;
+					if (i === 0) { out += '|' + cells.map(() => ' --- ').join('|') + '|' + NL; }
+				});
+				out += NL;
+				continue;
+			}
+			if (tag === 'HR') { out += '---' + NL + NL; continue; }
+			if (blocks.has(tag) || tag === 'LI' || tag === 'BODY' || tag === 'HTML') {
+				const hasBlock = [...child.children].some(c => {
+					const t = c.localName.toUpperCase();
+					return blocks.has(t) || /^H[1-6]$/.test(t) || t === 'UL' || t === 'OL' || t === 'PRE' || t === 'TABLE' || t === 'BLOCKQUOTE' || t === 'HR';
+				});
+				if (hasBlock) { block(child, depth); } else { emit(inline(child).trim()); }
+				continue;
+			}
+			emit(inline(child).trim());
+		}
+	};
+	block({ childNodes: [root] }, 0);
+	return out.trim() + (cut ? NL + NL + '[… cut: the page is longer than this]' : '');
+}`;
 
 export class BrowserController implements vscode.Disposable {
 
@@ -1377,6 +1485,12 @@ export class BrowserController implements vscode.Disposable {
 	 */
 	private readonly _chatOwners = new Map<vscode.BrowserTab, string>();
 	/**
+	 * Which caller opened a tab through `browser_navigate`, by `callerKey`.
+	 * `browser_close_tab` closes only such tabs (and a chat's own): a tab the
+	 * user opened is theirs to close, whatever a page tells an agent.
+	 */
+	private readonly _openedBy = new WeakMap<vscode.BrowserTab, string>();
+	/**
 	 * A few random characters in every id this window hands out (`tab-k3f-2`).
 	 * Counting from 1 alone made `tab-1` mean a different page after a window
 	 * reload, and in every other window — so an id written into a prompt and
@@ -1535,6 +1649,37 @@ export class BrowserController implements vscode.Disposable {
 				focused: tab === focused, chrome: tabSource.isChrome(tab),
 			};
 		});
+	}
+
+	/** The open tab with this id of ours, if any. No access rule applies: callers name a page, they do not act on it. */
+	public tabWithId(id: string): vscode.BrowserTab | undefined {
+		const open = tabSource.all ?? [];
+		this._identify(open);
+		return open.find(candidate => this._tabIds.get(candidate) === id);
+	}
+
+	/**
+	 * The page an MCP prompt names for this caller, under the same rules a tool
+	 * call would meet: a share wins (nothing while it is paused), a named tab is
+	 * given only if the caller may act on it, and otherwise the tab the caller
+	 * would act on. Never throws: a prompt with no page says so instead.
+	 */
+	public promptTab(caller: CallerIdentity, tabId?: string): vscode.BrowserTab | undefined {
+		if (!tabSource.available()) {
+			return undefined;
+		}
+		const { tab: own, paused, target } = this._resolveForCaller(caller);
+		if (paused) {
+			return undefined;
+		}
+		if (target) {
+			return own;
+		}
+		if (tabId) {
+			const named = this.tabWithId(tabId);
+			return named && this._usableBy(named, caller) ? named : undefined;
+		}
+		return own && this._usableBy(own, caller) ? own : undefined;
 	}
 
 	/** Gives a tab to one chat, taking it from any other; `undefined` makes it free for everyone. */
@@ -2534,6 +2679,53 @@ export class BrowserController implements vscode.Disposable {
 	}
 
 	/**
+	 * Closes a tab this caller opened (`browser_navigate` with a new tab, or the
+	 * first page), or one its chat owns.
+	 *
+	 * The rules are `selectTab`'s, narrowed: a tab the user shared is never
+	 * closed by an agent (closing it would pause the very assistant it was given
+	 * to, and the share is the user's), a caller under a share sees no other tab
+	 * to close, another chat's tab is refused like any use of it, and a tab the
+	 * user opened is left to the user — a page can tell an agent to close the
+	 * user's mail.
+	 */
+	public async closeTab(id: string, caller: CallerIdentity): Promise<unknown> {
+		await this._settle();
+		if (!tabSource.available()) {
+			requireGrant();
+		}
+		const assignment = this._shares.resolve(caller);
+		if (assignment.kind === 'paused') {
+			throw new Error(shareLostMessage(assignment.target));
+		}
+		const open = tabSource.all ?? [];
+		this._identify(open);
+		const match = open.find(tab => this._tabIds.get(tab) === id);
+		if (!match) {
+			throw new Error(`No open browser tab has the id ${id}. Call \`browser_tabs\` for the current list.`);
+		}
+		if (assignment.kind === 'shared') {
+			throw new Error(assignment.tab === match
+				? 'This is the tab the user gave you; only the user closes it (closing it would pause your tools).'
+				: 'The user has given you one browser tab, and you cannot act on any other.');
+		}
+		if (!this._usableBy(match, caller)) {
+			throw this._ownedRefusal(id);
+		}
+		if (this._shares.isShared(match)) {
+			throw new Error(`Tab ${id} is shared by the user with an assistant; only the user closes it.`);
+		}
+		const mine = this._openedBy.get(match) === callerKey(caller)
+			|| (caller.chatId !== undefined && this._chatOwners.get(match) === caller.chatId);
+		if (!mine) {
+			throw new Error(`Tab ${id} was opened by the user, not by you, so it is theirs to close. Ask them, or leave it open.`);
+		}
+		const info = { id, url: match.url, title: stripMarker(match.title) };
+		await match.close();
+		return { closed: info, nextSteps: ['Call browser_tabs to see which tab your tools follow now.'] };
+	}
+
+	/**
 	 * Opens a URL, driving the tab the tools are already on unless a new one is
 	 * asked for.
 	 *
@@ -2637,6 +2829,7 @@ export class BrowserController implements vscode.Disposable {
 			// the shadowed pin the share rules forbid — it comes back the moment
 			// the share is stopped, and the assistant returns to a tab it chose
 			// before the user overruled it.
+			this._openedBy.set(tab, callerKey(caller));
 			if (caller.chatId) {
 				this._chatOwners.set(tab, caller.chatId);
 				this._onDidChangeShare.fire();
@@ -2904,7 +3097,7 @@ export class BrowserController implements vscode.Disposable {
 	 * script. A field is secret by type, `autocomplete` token or name, so a "show
 	 * password" toggle that turned it into a text field does not reveal it.
 	 */
-	public async html(selector: string | undefined, frameId: string | undefined, caller: CallerIdentity): Promise<unknown> {
+	public async html(selector: string | undefined, frameId: string | undefined, caller: CallerIdentity, clean = false): Promise<unknown> {
 		refuseValueProbe(selector);
 		requireFrameId(frameId);
 		return this._withSession(caller, async session => {
@@ -2918,15 +3111,23 @@ export class BrowserController implements vscode.Disposable {
 			// build reached can still be open with its observer re-applying one —
 			// and this is the tool a model uses to check a page against itself, so
 			// it is the last place a stray suffix may appear.
-			return typeof value === 'string' ? redactSecretValues(stripMarkerFromHtml(value)) : value;
+			if (typeof value !== 'string') {
+				return value;
+			}
+			const markup = stripMarkerFromHtml(value);
+			// `cleanHtml` redacts the same secret values on its own pass, over the
+			// same scanner; either way no password leaves.
+			return clean ? cleanHtml(markup) : redactSecretValues(markup);
 		});
 	}
 
-	public async text(selector: string | undefined, frameId: string | undefined, caller: CallerIdentity): Promise<unknown> {
+	public async text(selector: string | undefined, frameId: string | undefined, caller: CallerIdentity, markdown = false): Promise<unknown> {
 		refuseValueProbe(selector);
 		requireFrameId(frameId);
 		return this._withSession(caller, async session => {
-			const text = await evaluate(session, `(() => {
+			const text = await evaluate(session, markdown
+				? `(${markdownFunctionDeclaration})(${literal(selector)})`
+				: `(() => {
 				const sel = ${literal(selector)};
 				const el = sel ? document.querySelector(sel) : document.body;
 				if (!el) { throw new Error('No element matches ' + sel); }
@@ -3833,12 +4034,16 @@ export class BrowserController implements vscode.Disposable {
 		frameId: string | undefined,
 		caller: CallerIdentity,
 		signal?: AbortSignal,
+		ready = false,
 	): Promise<unknown> {
-		if (!selector && !text) {
-			throw new Error('Give either a selector or a text to wait for.');
+		if (!selector && !text && !ready) {
+			throw new Error('Give a selector, a text, or ready: true to wait for.');
 		}
 		refuseValueProbe(selector);
 		requireFrameId(frameId);
+		if (ready && !selector && !text) {
+			return this._withSession(caller, session => this._waitReady(session, timeoutMs, frameId, signal));
+		}
 		const timedOut = 'Timed out waiting for ' + (selector ?? '') + (selector && text ? ' and ' : '')
 			+ (text ? JSON.stringify(text) : '');
 		const check = `(() => {
@@ -3852,59 +4057,304 @@ export class BrowserController implements vscode.Disposable {
 		})()`;
 
 		return this._withSession(caller, async session => {
-			const deadline = Date.now() + Math.max(0, timeoutMs);
-			let release: () => void = () => undefined;
-			// Settles when the call is over regardless of the page: past the
-			// deadline (with a little grace for the round in flight) or cancelled.
-			const ended = new Promise<'timeout' | 'cancelled'>(resolve => {
-				const timer = setTimeout(() => resolve('timeout'),
-					Math.min(Math.max(0, timeoutMs) + waitForGraceMs, maxTimerMs));
-				const onAbort = () => resolve('cancelled');
-				signal?.addEventListener('abort', onAbort, { once: true });
-				release = () => {
-					clearTimeout(timer);
-					signal?.removeEventListener('abort', onAbort);
-				};
-			});
-			const settle = (outcome: 'timeout' | 'cancelled'): never => {
-				throw new Error(outcome === 'cancelled' ? 'The wait was cancelled.' : timedOut);
-			};
-			try {
-				for (;;) {
-					if (signal?.aborted) {
-						settle('cancelled');
-					}
-					const round = evaluate(session, check, frameId).then(
-						found => found === true,
-						err => {
-							if (documentReplaced(err)) {
-								return false;
-							}
-							throw err;
-						});
-					round.catch(() => { /* answered below, or abandoned with the call */ });
-					const outcome = await Promise.race([round, ended]);
-					if (outcome === true) {
-						return 'found';
-					}
-					if (outcome === 'timeout' || outcome === 'cancelled') {
-						settle(outcome);
-					}
-					if (Date.now() >= deadline) {
-						settle('timeout');
-					}
-					const paused = await Promise.race([
-						new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), waitForPollMs)),
-						ended,
-					]);
-					if (paused) {
-						settle(paused);
-					}
-				}
-			} finally {
-				release();
+			await this._poll(session, check, timeoutMs, frameId, signal, timedOut, value => value === true ? true : undefined);
+			if (ready) {
+				await this._waitReady(session, Math.max(1000, Math.min(timeoutMs, 5000)), frameId, signal);
 			}
+			return 'found';
 		});
+	}
+
+	/**
+	 * Waits until the document stops changing: a single-page app has drawn its
+	 * view. The signature is the element count and the length of the body's text,
+	 * read by one short check per round (polled from the host, #331); it must
+	 * stay the same for `readyQuietRounds` rounds in a row. A replaced document
+	 * starts the count again.
+	 */
+	private async _waitReady(session: TabSession, timeoutMs: number, frameId: string | undefined, signal: AbortSignal | undefined): Promise<unknown> {
+		const check = `(() => {
+			if (document.readyState === 'loading' || !document.body) { return null; }
+			return document.getElementsByTagName('*').length + ':' + (document.body.innerText ?? '').length;
+		})()`;
+		let last: unknown;
+		let same = 0;
+		const started = Date.now();
+		await this._poll(session, check, timeoutMs, frameId, signal, 'Timed out waiting for the page to stop changing.', value => {
+			if (typeof value !== 'string') {
+				last = undefined;
+				same = 0;
+				return undefined;
+			}
+			same = value === last ? same + 1 : 0;
+			last = value;
+			return same >= readyQuietRounds ? true : undefined;
+		});
+		return { ready: true, waitedMs: Date.now() - started };
+	}
+
+	/**
+	 * The forms on the page — `browser_forms`. Each field with a selector that
+	 * resolves back to it (checked with `querySelector`, the call `fill` makes),
+	 * its label, type, whether it is required, a choice's options (50 at most)
+	 * and `filled` as a boolean. **No field's value is ever returned**: a form a
+	 * page renders is the user's, and a typed password sits in it (#211). A field
+	 * an agent may not type into is marked `protected`, by the one rule in
+	 * `secretGuards.ts`, judged here from the attributes the page reports.
+	 */
+	public async forms(frameId: string | undefined, caller: CallerIdentity): Promise<unknown> {
+		requireFrameId(frameId);
+		return this._withSession(caller, async session => {
+			const value = await evaluate(session, `(() => {
+				const cssId = v => CSS.escape(v);
+				const unique = (sel, el) => { try { const all = document.querySelectorAll(sel); return all.length === 1 && all[0] === el; } catch { return false; } };
+				const selectorOf = el => {
+					if (el.id && unique('#' + cssId(el.id), el)) return '#' + cssId(el.id);
+					const name = el.getAttribute('name');
+					if (name) { const s = el.localName + '[name="' + CSS.escape(name) + '"]'; if (unique(s, el)) return s; }
+					const parts = [];
+					for (let n = el; n && n.nodeType === 1 && n !== document.documentElement; n = n.parentElement) {
+						let i = 1; for (let p = n.previousElementSibling; p; p = p.previousElementSibling) if (p.localName === n.localName) i++;
+						parts.unshift(n.localName + ':nth-of-type(' + i + ')');
+						const s = parts.join(' > ');
+						if (unique(s, el)) return s;
+					}
+					return undefined;
+				};
+				const clip = (t, n) => (t || '').replace(/\\s+/g, ' ').trim().slice(0, n);
+				const labelOf = el => {
+					const aria = el.getAttribute('aria-label'); if (aria) return clip(aria, 120);
+					const by = el.getAttribute('aria-labelledby');
+					if (by) { const t = by.split(/\\s+/).map(id => document.getElementById(id)?.innerText || '').join(' '); if (t.trim()) return clip(t, 120); }
+					if (el.labels && el.labels.length) return clip(el.labels[0].innerText, 120);
+					const ph = el.getAttribute('placeholder'); if (ph) return clip(ph, 120);
+					const title = el.getAttribute('title'); if (title) return clip(title, 120);
+					return '';
+				};
+				const visible = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
+				const skip = new Set(['hidden', 'submit', 'button', 'reset', 'image']);
+				const fieldOf = el => {
+					const tag = el.localName;
+					const type = tag === 'input' ? (el.getAttribute('type') || 'text').toLowerCase() : tag;
+					if (tag === 'input' && skip.has(type)) return undefined;
+					if (el.disabled) return undefined;
+					const f = { selector: selectorOf(el), label: labelOf(el), type, required: !!el.required,
+						attributes: { type: el.getAttribute('type') || '', name: el.getAttribute('name') || '', id: el.id || '', autocomplete: el.getAttribute('autocomplete') || '' } };
+					if (!visible(el)) f.hidden = true;
+					if (tag === 'select') {
+						f.options = Array.from(el.options).slice(0, 50).map(o => ({ value: o.value, label: clip(o.label, 80) }));
+						f.multiple = !!el.multiple;
+						f.filled = el.selectedIndex > 0;
+					} else if (type === 'checkbox' || type === 'radio') {
+						f.filled = !!el.checked;
+						if (el.getAttribute('value') !== null) f.option = clip(el.getAttribute('value'), 80);
+					} else if (type === 'file') {
+						f.filled = !!(el.files && el.files.length);
+					} else {
+						f.filled = !!el.value;
+					}
+					return f;
+				};
+				const fieldsIn = root => Array.from(root.querySelectorAll('input, select, textarea')).map(fieldOf).filter(Boolean).slice(0, 100);
+				const submitIn = root => Array.from(root.querySelectorAll('button, input[type=submit], input[type=image]'))
+					.filter(b => (b.localName !== 'button' || (b.getAttribute('type') || 'submit').toLowerCase() === 'submit') && visible(b))
+					.slice(0, 5).map(b => ({ selector: selectorOf(b), label: clip(b.innerText || b.value || b.getAttribute('aria-label'), 80) }));
+				const forms = Array.from(document.forms).slice(0, 20).map(form => ({
+					selector: selectorOf(form), name: form.getAttribute('name') || form.id || undefined,
+					method: (form.getAttribute('method') || 'get').toLowerCase(),
+					fields: fieldsIn(form), submit: submitIn(form),
+				}));
+				const loose = Array.from(document.querySelectorAll('input, select, textarea')).filter(el => !el.form).map(fieldOf).filter(Boolean).slice(0, 100);
+				return { url: location.href, forms, looseFields: loose };
+			})()`, frameId) as { url: string; forms: { fields: Record<string, unknown>[] }[]; looseFields: Record<string, unknown>[] } | undefined;
+			if (!value || typeof value !== 'object') {
+				return value;
+			}
+			const judge = (field: Record<string, unknown>) => {
+				const attributes = field.attributes as Record<string, string> | undefined;
+				delete field.attributes;
+				if (attributes && (isProtectedField(attributes) || isSecretField(attributes))) {
+					field.protected = true;
+				}
+				return field;
+			};
+			for (const form of value.forms ?? []) {
+				form.fields = (form.fields ?? []).map(judge);
+			}
+			value.looseFields = (value.looseFields ?? []).map(judge);
+			const count = (value.forms ?? []).reduce((n, f) => n + f.fields.length, 0) + value.looseFields.length;
+			return {
+				...value,
+				nextSteps: count
+					? 'Fill the fields with browser_fill_form in one call. Fields marked protected (passwords, one-time codes, cards) are the user\'s to type. Ask before pressing a submit button.'
+					: 'No form fields here. If the form is inside a frame, call browser_frames and pass its frameId.',
+			};
+		});
+	}
+
+	/**
+	 * Several fields in one call — `browser_fill_form`. Each goes through `fill`,
+	 * with every rule it has (the value-probe and protected-field refusals, the
+	 * read-back), and each answers on its own: one refused field does not stop
+	 * the rest. Order is the caller's, since a field can depend on the one before
+	 * (a country before its state).
+	 */
+	public async fillForm(fields: readonly { selector: string; value: string }[], frameId: string | undefined, caller: CallerIdentity, signal?: AbortSignal): Promise<unknown> {
+		requireFrameId(frameId);
+		if (!fields.length) {
+			throw new Error('Pass at least one { selector, value } in fields.');
+		}
+		if (fields.length > 50) {
+			throw new Error('At most 50 fields in one call.');
+		}
+		const results: { selector: string; ok: boolean; result?: unknown; error?: string }[] = [];
+		for (const field of fields) {
+			if (signal?.aborted) {
+				break;
+			}
+			try {
+				results.push({ selector: field.selector, ok: true, result: await this.fill(field.selector, field.value, frameId, caller, signal) });
+			} catch (error) {
+				results.push({ selector: field.selector, ok: false, error: error instanceof Error ? error.message : String(error) });
+			}
+		}
+		const failed = results.filter(r => !r.ok).length;
+		return {
+			filled: results.length - failed,
+			failed,
+			fields: results,
+			nextSteps: failed
+				? 'Some fields were refused: read each error. Protected fields are for the user to type. Do not submit until the user agrees.'
+				: 'Check the page (browser_snapshot) and ask the user before pressing a submit button.',
+		};
+	}
+
+	/**
+	 * Waits for a sign-in the user is doing: done when no visible password field
+	 * is left on the page, or when the text or selector named appears. The page
+	 * may navigate any number of times meanwhile (SSO, two steps): a replaced
+	 * document is "not yet", like any other round.
+	 */
+	public async waitForLogin(
+		text: string | undefined,
+		selector: string | undefined,
+		timeoutMs: number,
+		frameId: string | undefined,
+		caller: CallerIdentity,
+		signal?: AbortSignal,
+	): Promise<unknown> {
+		refuseValueProbe(selector);
+		requireFrameId(frameId);
+		const check = `(() => {
+			if (document.readyState === 'loading' || !document.body) { return null; }
+			const sel = ${literal(selector)};
+			const needle = ${literal(text)};
+			if (sel && document.querySelector(sel)) { return 'selector'; }
+			if (needle && (document.body.innerText ?? '').includes(needle)) { return 'text'; }
+			if (sel || needle) { return null; }
+			const visible = el => {
+				const r = el.getBoundingClientRect();
+				const st = getComputedStyle(el);
+				return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
+			};
+			const fields = [...document.querySelectorAll('input[type=password]')].filter(visible);
+			return fields.length ? 'form' : 'gone';
+		})()`;
+		return this._withSession(caller, async (session, tab) => {
+			const started = Date.now();
+			let sawForm = false;
+			const how = await this._poll(session, check, timeoutMs, frameId, signal,
+				'Timed out waiting for the sign-in. Ask the user whether they finished; do not sign in yourself.', value => {
+					if (value === 'form') {
+						sawForm = true;
+					}
+					return value === 'selector' || value === 'text' || value === 'gone' ? value : undefined;
+				});
+			return {
+				signedIn: true,
+				how: how === 'gone' ? (sawForm ? 'the sign-in form went away' : 'no sign-in form on the page') : `the ${how} appeared`,
+				url: tab.url,
+				title: stripMarker(tab.title),
+				waitedMs: Date.now() - started,
+				nextSteps: ['Call browser_snapshot or browser_text to see where the page ended up.'],
+			};
+		});
+	}
+
+	/**
+	 * Polls one short page check from the host until `accept` turns its answer
+	 * into a result. Each round is one evaluate; nothing runs in the page between
+	 * rounds (#331). A replaced document (`documentReplaced`: a navigation, a
+	 * frame between documents or whose session ended) answers `undefined`, and
+	 * the next round looks the document up again — the frame's too, when one was
+	 * named. The deadline and a cancellation from the client end the wait even
+	 * while a round is unanswered: a page busy in a long task holds an evaluate
+	 * for as long as it likes, and the hold in `_withSession` must not be kept
+	 * with it.
+	 */
+	private async _poll<T>(
+		session: TabSession,
+		check: string,
+		timeoutMs: number,
+		frameId: string | undefined,
+		signal: AbortSignal | undefined,
+		timedOut: string,
+		accept: (value: unknown) => T | undefined,
+	): Promise<T> {
+		const deadline = Date.now() + Math.max(0, timeoutMs);
+		let release: () => void = () => undefined;
+		// Settles when the call is over regardless of the page: past the
+		// deadline (with a little grace for the round in flight) or cancelled.
+		const ended = new Promise<'timeout' | 'cancelled'>(resolve => {
+			const timer = setTimeout(() => resolve('timeout'),
+				Math.min(Math.max(0, timeoutMs) + waitForGraceMs, maxTimerMs));
+			const onAbort = () => resolve('cancelled');
+			signal?.addEventListener('abort', onAbort, { once: true });
+			release = () => {
+				clearTimeout(timer);
+				signal?.removeEventListener('abort', onAbort);
+			};
+		});
+		const settle = (outcome: 'timeout' | 'cancelled'): never => {
+			throw new Error(outcome === 'cancelled' ? 'The wait was cancelled.' : timedOut);
+		};
+		const marker = Symbol('round');
+		try {
+			for (;;) {
+				if (signal?.aborted) {
+					settle('cancelled');
+				}
+				const round = evaluate(session, check, frameId).then(
+					value => ({ [marker]: true, value }),
+					err => {
+						if (documentReplaced(err)) {
+							return { [marker]: true, value: undefined };
+						}
+						throw err;
+					});
+				round.catch(() => { /* answered below, or abandoned with the call */ });
+				const outcome = await Promise.race([round, ended]);
+				if (outcome === 'timeout' || outcome === 'cancelled') {
+					settle(outcome);
+				}
+				const result = accept((outcome as { value: unknown }).value);
+				if (result !== undefined) {
+					return result;
+				}
+				if (Date.now() >= deadline) {
+					settle('timeout');
+				}
+				const paused = await Promise.race([
+					new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), waitForPollMs)),
+					ended,
+				]);
+				if (paused) {
+					settle(paused);
+				}
+			}
+		} finally {
+			release();
+		}
 	}
 
 	public dispose(): void {

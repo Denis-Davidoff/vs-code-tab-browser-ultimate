@@ -5,7 +5,7 @@
 
 import * as assert from 'node:assert';
 import { suite, test } from 'node:test';
-import { comparesFieldValue, isSecretField, redactSecretValues } from './secretGuards.ts';
+import { cleanHtml, comparesFieldValue, isProtectedField, isSecretField, redactSecretValues } from './secretGuards.ts';
 
 suite('comparesFieldValue', () => {
 
@@ -192,4 +192,68 @@ suite('redactSecretValues', () => {
 		const html = '<div><input type="search" value="query"> <p>value="x"</p><input name="passengers" value="2"></div>';
 		assert.strictEqual(redactSecretValues(html), html);
 	});
+});
+
+suite('isProtectedField', () => {
+	test('passwords and payment fields are protected', () => {
+		assert.ok(isProtectedField({ type: 'password' }));
+		assert.ok(isProtectedField({ autocomplete: 'cc-number' }));
+		assert.ok(isProtectedField({ autocomplete: 'billing cc-csc' }));
+		assert.ok(isProtectedField({ name: 'cardNumber' }));
+		assert.ok(isProtectedField({ name: 'cvv' }));
+		assert.ok(isProtectedField({ id: 'cc-cvc' }));
+		for (const name of ['card-number', 'cc-number', 'credit_card', 'creditCardNumber', 'security_code', 'card_no']) {
+			assert.ok(isProtectedField({ name }), name);
+		}
+	});
+	test('ordinary fields are not', () => {
+		assert.ok(!isProtectedField({ type: 'email', name: 'email' }));
+		assert.ok(!isProtectedField({ name: 'discount_code' }));
+		assert.ok(!isProtectedField({ name: 'cardholder_name' }));
+		assert.ok(!isProtectedField({ name: 'scorecard' }));
+		assert.ok(!isProtectedField({ name: 'credit_card_holder' }));
+		assert.ok(!isProtectedField({ name: 'creditCardType' }));
+	});
+});
+
+test('cleanHtml drops scripts, styles, comments, handlers and data attributes', () => {
+	const html = '<div class="a" data-x="1" onclick="go()" style="color:red"><!-- <input type=password value=s> -->'
+		+ '<script>const x = "<input value=\'pw\'>";</script><style>a{}</style><b id="t">Hi</b></div>';
+	assert.strictEqual(cleanHtml(html), '<div class="a"><b id="t">Hi</b></div>');
+});
+
+test('cleanHtml redacts a secret value and keeps a plain one', () => {
+	assert.strictEqual(cleanHtml('<input type="password" name="p" value="hunter2">'), '<input type="password" name="p">');
+	assert.strictEqual(cleanHtml('<input type="text" name="q" value="shoes">'), '<input type="text" name="q" value="shoes">');
+});
+
+test('cleanHtml is not fooled by quotes that open no value', () => {
+	// `a'` is an attribute name, not a quote: the password input after it must still be cleaned.
+	const out = cleanHtml('<div a\'="x">t</div><input type=password value=hunter2 onfocus=steal()>');
+	assert.ok(!out.includes('hunter2'), out);
+	assert.ok(!out.includes('onfocus'), out);
+	const out2 = cleanHtml('<div =\'>t</div><input type=password value=hunter2>');
+	assert.ok(!out2.includes('hunter2'), out2);
+});
+
+test('cleanHtml empties svg and template, keeping the svg tag', () => {
+	assert.strictEqual(
+		cleanHtml('<button aria-label="Close"><svg viewBox="0 0 1 1"><svg><path d="M0"/></svg><path d="M1"/></svg></button><p>x</p>'),
+		'<button aria-label="Close"><svg viewBox="0 0 1 1"></svg></button><p>x</p>');
+	assert.strictEqual(cleanHtml('<template><template><p>a</p></template><b>b</b></template><i>c</i>'), '<i>c</i>');
+});
+
+test('cleanHtml shortens long data URLs and squeezes blank lines outside pre', () => {
+	const src = 'data:image/png;base64,' + 'A'.repeat(400);
+	assert.strictEqual(cleanHtml(`<img alt="x" src="${src}">`), '<img alt="x" src="data:…">');
+	assert.strictEqual(cleanHtml('<p>a</p>\n\n\n   \n<p>b</p>'), '<p>a</p>\n<p>b</p>');
+	assert.strictEqual(cleanHtml('<pre>a\n\n\nb</pre>'), '<pre>a\n\n\nb</pre>');
+});
+
+test('cleanHtml stays linear on long whitespace and odd input', () => {
+	const started = Date.now();
+	cleanHtml('<p>' + ' '.repeat(200_000) + '\n' + ' '.repeat(200_000) + '</p>' + '<style>'.repeat(20_000));
+	assert.ok(Date.now() - started < 2000);
+	assert.strictEqual(cleanHtml('<b>open'), '<b>open');
+	assert.strictEqual(cleanHtml('a < b'), 'a < b');
 });

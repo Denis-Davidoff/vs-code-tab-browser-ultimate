@@ -150,7 +150,34 @@ const actionSnapshotFunction = String.raw`function(...closedRoots) {
 			out.push(entry);
 		}
 	}
-	return {url:location.href,title:document.title,elements:out,truncated:out.length>=150 || visited>=20000 || roots.length>=200};
+	// Panels that scroll on their own (an app shell keeps its body fixed): browser_scroll takes their selector.
+	const scrollAreas=[]; let scanned=0;
+	for (const el of document.body ? document.body.querySelectorAll('*') : []) {
+		if (++scanned>5000 || scrollAreas.length>=10) break;
+		if (el.scrollHeight<=el.clientHeight+20 || el.clientHeight<40) continue;
+		const oy=getComputedStyle(el).overflowY;
+		if (oy!=='auto' && oy!=='scroll' && oy!=='overlay') continue;
+		const rect=el.getBoundingClientRect();
+		if (!rect.width || !rect.height) continue;
+		const selector=localSelector(el,document);
+		if (!selector || selector.length>4000) continue;
+		const label=(el.getAttribute('aria-label') || el.getAttribute('role') || el.localName).slice(0,60);
+		scrollAreas.push({selector,label,scrollTop:Math.round(el.scrollTop),scrollHeight:el.scrollHeight,height:el.clientHeight,atBottom:el.scrollTop+el.clientHeight>=el.scrollHeight-2});
+	}
+	// Where the page's own content is, so a model can read that instead of the whole shell.
+	let mainContent;
+	for (const s of ['main','[role="main"]','article']) {
+		const found=document.querySelectorAll(s);
+		if (found.length!==1) continue;
+		const rect=found[0].getBoundingClientRect();
+		if (!rect.width || !rect.height) continue;
+		const selector=localSelector(found[0],document);
+		if (selector) { mainContent=selector; break; }
+	}
+	const result={url:location.href,title:document.title,elements:out,truncated:out.length>=150 || visited>=20000 || roots.length>=200};
+	if (scrollAreas.length) result.scrollAreas=scrollAreas;
+	if (mainContent) result.mainContent=mainContent;
+	return result;
 }`;
 export const actionSnapshotSource = `(${actionSnapshotFunction})()`;
 

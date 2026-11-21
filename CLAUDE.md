@@ -3308,11 +3308,97 @@ Decisions, each with its reason:
 - **Keep-awake uses the `SleepControl` of the caller's surface**, since `working(tabId)` looks at
   its own tabs; `chat_state` names any other surface holding the computer (`alsoHeldBy`).
 - **Text is cut by code point** (`capAt`): a lone surrogate is refused by Codex's JSON reader.
+- **`skill_list` / `skill_get` serve the built-in guides** (`guide-forms`, `guide-login`, `guide-iframes`,
+  `guide-sites`, [src/mcp/browserGuides.ts](src/mcp/browserGuides.ts), leaf): AI Browser has no toolbar skill
+  catalogue, so these two list and return the guides only (`builtIn: true`), each as numbered steps for the agent to
+  follow itself. Read-only; both are reads in `browserServerTools` (no card). An unknown name answers with the names
+  there are. See [Prompts, guides and structured results](#prompts-guides-structured-results-and-version-gating).
 
 Verified: the category and the Gemini fallback under `npm test`; the compiled tools through
 `dispatch` with a stubbed chat (reads and refusals for an outside caller, own-tab arguments, a
 stray `tabId` ignored, the capability round trip). **Not run inside VS Code yet**: `mcpControl`
 against live tabs, and the Resume row.
+
+### Prompts, guides, structured results and version gating
+
+Asked for, after studying MCPBrowser (github.com/cherchyk/MCPBrowser): everything it does that a
+client can use, and nothing that weakens the security model. **Not taken, on purpose**: an
+`execute_javascript` tool (a page-chosen instruction away from running anything in the page), an
+`el.click()` fallback when the native click fails (#21's rule: a covered or disabled target is a
+refusal, not something to click through), grouping tabs by domain, and HTML read with regular
+expressions.
+
+- **Protocol features follow the negotiated version** (`protocolFeatures`, `supports`,
+  `listedTool` in `mcpProtocol.ts`, under test in `mcpPrompts.test.ts`): `annotations` from
+  `2025-03-26` (carrying the tool's `title` there, since a top-level `title` does not exist yet),
+  `title`, `outputSchema` and `structuredContent` from `2025-06-18`, `icons` from `2025-11-25`. A
+  version that cannot be read counts as `defaultProtocolVersion`, never as the newest: a strict
+  client refuses a listing with a field its schema does not have. The session's version is kept
+  per `Mcp-Session-Id`.
+- **Annotations and icons** come from [src/mcp/toolMeta.ts](src/mcp/toolMeta.ts) (leaf): one
+  entry per tool, hints by kind (read, web, set, add, act…) and a codicon-style SVG per group as a
+  `data:` URI. **Hints decide nothing here** — the approval menu files calls by `ourToolClass`,
+  and terminal input needs its grant whatever `readOnlyHint` says. `toolMeta.test.ts` reads the
+  tool files as text and fails on a tool with no entry, or an entry for a tool that is gone.
+- **`structuredContent` only from a tool that declares `outputSchema`**, only for a client at
+  `2025-06-18` or later, and only for a plain-object result; the text block is still sent beside
+  it. Declared today: `browser_state`, `browser_tabs`, `chat_state`.
+- **MCP prompts** (`prompts/list`, `prompts/get`, capability `prompts: { listChanged: false }`):
+  `translate-page` (Translate Page's own prompt, language checked to one line), `fill-form`,
+  `log-in` and `page-audit`. AI Browser has no toolbar skill catalogue, so the port's `skills` is empty and no
+  `skill_<name>` prompts are listed; the shared module still carries them. [src/mcp/mcpPrompts.ts](src/mcp/mcpPrompts.ts)
+  is a leaf: everything comes through `PromptPort`. **Page text goes through `plain`**
+  (`plainInPrompt`, #154): a title is the page's choice and lands in text handed to an agent with
+  shell tools. A prompt runs nothing — it becomes one user message. A test checks that every
+  tool a prompt or a guide names is registered in `mcpServer.ts`, `chatTools.ts` or
+  `terminalTools.ts`; renaming a tool fails it.
+  **The page a prompt names follows the caller's rules** (`BrowserController.promptTab`): the
+  tab shared with it (none while paused), a named `tabId` only if `_usableBy` it, else the tab its
+  tools would act on. It used to take `userTab` or any named tab, so a prompt handed an assistant
+  limited to one tab another tab's title, address and id (breaks-silently #567).
+- **Progress over SSE** (`_progressStream` in `mcpServer.ts`): a `tools/call` whose client sent
+  `_meta.progressToken` and accepts `text/event-stream` gets its answer as an event stream —
+  opened lazily, at the first report, so every other call stays plain JSON. A `longRunning` tool
+  (only `browser_wait_for_login` today) sends a heartbeat every few seconds; `progress` grows
+  with every notification, as the spec asks.
+- **Two sentences were added to the server instructions**: say what you are about to do and let the
+  user confirm before an action with consequences they did not ask for in so many words (submit,
+  buy, send, delete); and read a page again after changing it, since a selector from before may now
+  name something else.
+
+### Browser tools added with them
+
+- **`browser_close_tab`** — by id, refused for a tab the user shared and for another
+  conversation's tab (`_ownedRefusal`); answers with `nextSteps`.
+- **`browser_forms` / `browser_fill_form`** — every form's fields with a resolving selector,
+  label, type, required, options and `filled` — **never a value** (#211); protected fields
+  (`isProtectedField`) are marked for the user. `browser_fill_form` fills in order, each like
+  `browser_fill` (same React setter, same secret-field refusal), reports per field, never submits.
+- **`browser_wait_for_login`** — waits while the *user* signs in: done when no visible password
+  field remains or the named text/selector appears, across redirects and two-step pages;
+  120 s by default, 600 s at most, `longRunning`.
+- **`browser_wait_for` takes `ready: true`** (`_waitReady`): the element count and body text length
+  unchanged for `readyQuietRounds` host-polled rounds (#331's rule — nothing loops in the page); a
+  replaced document starts again.
+- **`browser_html` takes `clean: true`** — `cleanHtml` in `secretGuards.ts`: comments, scripts,
+  styles, `noscript`, `template`, `link`/`meta`, inline SVG insides, event handlers, inline styles
+  and `data-*` gone, `data:` URLs shortened, secret values redacted. **It reads the markup with the
+  redaction's tokenizer, never a regular expression** (#262, #505, #506): a `<` inside a comment or
+  raw text is not a tag, and a quote opens a value only where HTML would read one.
+- **`browser_text` takes `format: 'markdown'`** (`markdownFunctionDeclaration`): headings, lists,
+  links, tables and code kept; form controls, scripts and hidden elements left out; at most 200 000
+  characters. A page-side template literal, so no backticks inside it (the rule under [The four element commands](#the-four-element-commands)).
+- **The snapshot carries `scrollAreas`** (at most 10 scrolling elements with selector, label and
+  position) **and `mainContent`** (the selector of the one visible `main` / `[role=main]` /
+  `article`), in `nativeActions.ts`.
+- **`nextSteps`** in results that change something (navigate, close, fill form, login wait): one
+  or two sentences naming the tool to call next. Advice only; nothing reads it.
+- Site recipes are the `guide-sites` guide, not code.
+
+**Tests that build `chatTools.ts` with their own `require` map** (`linkedChatTools.test.ts`,
+`visualizationIntegration.test.ts`) must list `./browserGuides` — #549 again; a missing entry throws
+"Unexpected dependency". **Not run inside VS Code yet**: the prompts in Claude Code's slash menu,
+SSE progress against a real client, and the four new browser tools on live pages.
 
 ### Lifecycle
 
@@ -11307,6 +11393,10 @@ a title read from the page, never in `BrowserTab.title`. What actually removes i
      (`composerListContinues` in the composer's Enter, and `composerListChecker` — the same rule, sharing its answers across lines — in `renderPromptText`). Every new
      place that reads list markers must ask it too, and Tab/Shift+Tab renumber a moved item
      (`composerNumberAt`) so nesting never makes a list that starts at 2.
+567. **A helper that names a resource without the access rule its tools apply** → MCP prompts
+     read `userTab` / `tabWithId`, so a caller bounded to its shared tab, or kept off another
+     chat's tab or the user's own Chrome, was told about pages it may not see. Resolve through
+     the same caller rules as a tool call (`promptTab`).
 
 ## Special cases and non-obvious decisions
 

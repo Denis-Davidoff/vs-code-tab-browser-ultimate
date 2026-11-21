@@ -18,6 +18,7 @@ export const errorCodes = {
 	parse: -32700,
 	invalidRequest: -32600,
 	methodNotFound: -32601,
+	invalidParams: -32602,
 	internal: -32603,
 } as const;
 
@@ -70,11 +71,114 @@ export interface Tool {
 	 */
 	visibleTo?(caller: Caller): boolean;
 	/**
+	 * MCP behaviour hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`,
+	 * `openWorldHint`), filled in from `toolMeta.ts` by the server. Advice to a
+	 * client, never a permission: the approval menu and the terminal grants
+	 * decide what runs.
+	 */
+	readonly annotations?: ToolAnnotations;
+	/** Icons for the tool's group (`toolMeta.ts`), sent from protocol 2025-11-25. */
+	readonly icons?: readonly ToolIcon[];
+	/**
+	 * The shape of the result, sent from protocol 2025-06-18. A tool that has one
+	 * answers a plain object, which goes out as `structuredContent` beside the
+	 * text block. Loose on purpose — no `required`, no closed objects — because
+	 * a client that validates a result against it refuses the whole call on a
+	 * field the schema did not foresee.
+	 */
+	readonly outputSchema?: Record<string, unknown>;
+	/**
+	 * Waits on something that can take a while (the user's click, a page load,
+	 * a sign-in). With a `progressToken` in the request the server reports it
+	 * every few seconds, so a client that resets its timeout on progress keeps
+	 * the call alive.
+	 */
+	readonly longRunning?: boolean;
+	/**
 	 * `signal` fires when the client gives up on the call — a
 	 * `notifications/cancelled` naming it, or the connection closing first.
 	 * Only tools that wait on something outside the server need it.
+	 * `progress` reports how far it got, when the client asked for progress.
 	 */
-	run(args: Record<string, unknown>, caller: Caller, signal?: AbortSignal): Promise<unknown>;
+	run(args: Record<string, unknown>, caller: Caller, signal?: AbortSignal, progress?: Progress): Promise<unknown>;
+}
+
+export interface ToolAnnotations {
+	readonly readOnlyHint?: boolean;
+	readonly destructiveHint?: boolean;
+	readonly idempotentHint?: boolean;
+	readonly openWorldHint?: boolean;
+}
+
+export interface ToolIcon {
+	readonly src: string;
+	readonly mimeType: string;
+	readonly sizes?: readonly string[];
+}
+
+/** A `notifications/progress` for the call in flight: `progress` grows, `total` when known. */
+export type Progress = (progress: number, total?: number, message?: string) => void;
+
+/**
+ * An MCP prompt: a template the client offers its user (Claude Code lists them
+ * as slash commands), filled in by `get` with the arguments the user gave.
+ */
+export interface Prompt {
+	readonly name: string;
+	readonly title: string;
+	readonly description: string;
+	readonly arguments: readonly { readonly name: string; readonly description: string; readonly required?: boolean }[];
+	/** The text of the one user message the prompt becomes. Throws to refuse. */
+	get(args: Record<string, string>, caller: Caller): Promise<string> | string;
+}
+
+/** The protocol versions that introduced the fields this server sends. */
+export const protocolFeatures = {
+	/** `annotations` on a tool, with `title` inside them. */
+	annotations: '2025-03-26',
+	/** `title` and `outputSchema` on a tool, `structuredContent` in a result. */
+	structured: '2025-06-18',
+	/** `icons` on a tool. */
+	icons: '2025-11-25',
+} as const;
+
+/**
+ * Whether a client that negotiated `version` may be sent a field introduced in
+ * `since`. MCP versions are dates written `YYYY-MM-DD`, so they compare as
+ * strings. Anything else (absent, or a client's own spelling) is read as the
+ * server's default, which is what such a client was answered with at
+ * `initialize` — a field it cannot parse is worse than one it does not get.
+ */
+export function supports(version: string | undefined, since: string): boolean {
+	const known = version !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(version) ? version : defaultProtocolVersion;
+	return known >= since;
+}
+
+/** A tool as `tools/list` shows it to a client that negotiated `version`. */
+export function listedTool(tool: Tool, version: string | undefined): Record<string, unknown> {
+	const entry: Record<string, unknown> = { name: tool.name, description: tool.description, inputSchema: tool.inputSchema };
+	const structured = supports(version, protocolFeatures.structured);
+	if (structured) {
+		entry.title = tool.title;
+		if (tool.outputSchema) {
+			entry.outputSchema = tool.outputSchema;
+		}
+	}
+	if (supports(version, protocolFeatures.annotations)) {
+		// 2025-03-26 has no top-level `title`; its place is inside the annotations.
+		const annotations = { ...(structured ? {} : { title: tool.title }), ...tool.annotations };
+		if (Object.keys(annotations).length > 0) {
+			entry.annotations = annotations;
+		}
+	}
+	if (tool.icons && supports(version, protocolFeatures.icons)) {
+		entry.icons = tool.icons;
+	}
+	return entry;
+}
+
+function plainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 }
 
 /** An MCP content block — `text` or `image`, the two this server produces. */
@@ -178,6 +282,10 @@ export interface DispatchContext {
 	readonly serverVersion: string;
 	readonly workspaceName: string | undefined;
 	readonly tools: readonly Tool[];
+	/** The version this session negotiated at `initialize`; decides which tool fields are sent. */
+	readonly protocolVersion?: string;
+	/** The prompts `prompts/list` offers this caller. */
+	readonly prompts?: readonly Prompt[];
 }
 
 export interface JsonRpcResponse {
@@ -215,6 +323,10 @@ function instructions(workspaceName: string | undefined): string {
 		'The `editor_*` tools are the code editor beside the browser: `editor_context` says what the user has open and'
 		+ ' selected, `editor_reveal` shows them a place, and `editor_definition`, `editor_references` and `editor_symbols`'
 		+ ' navigate by symbol through the language servers.',
+		'Before an action with consequences the user has not asked for in so many words — submitting a form, buying,'
+		+ ' sending a message, deleting — say what you are about to do and let them confirm.',
+		'After you change a page (click, fill, navigate), read it again before relying on what it shows: the page may'
+		+ ' have moved on, and a selector from before the change may now name something else.',
 	].join(' ');
 }
 
@@ -242,6 +354,7 @@ export async function dispatch(
 	ctx: DispatchContext,
 	caller: Caller = { kind: 'other' },
 	signal?: AbortSignal,
+	progress?: Progress,
 ): Promise<JsonRpcResponse | undefined> {
 
 	if (isNotification(request)) {
@@ -258,7 +371,7 @@ export async function dispatch(
 			const asked = stringOrUndefined(request.params?.protocolVersion);
 			return result(id, {
 				protocolVersion: asked ?? defaultProtocolVersion,
-				capabilities: { tools: { listChanged: false } },
+				capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
 				serverInfo: { name: 'ai-browser', version: ctx.serverVersion },
 				instructions: instructions(ctx.workspaceName),
 			});
@@ -269,9 +382,46 @@ export async function dispatch(
 
 		case 'tools/list':
 			return result(id, {
-				tools: ctx.tools.filter(tool => tool.visibleTo?.(caller) !== false).map(({ name, title, description, inputSchema }) =>
-					({ name, title, description, inputSchema })),
+				tools: ctx.tools.filter(tool => tool.visibleTo?.(caller) !== false)
+					.map(tool => listedTool(tool, ctx.protocolVersion)),
 			});
+
+		case 'prompts/list':
+			return result(id, {
+				prompts: (ctx.prompts ?? []).map(prompt => ({
+					name: prompt.name,
+					...(supports(ctx.protocolVersion, protocolFeatures.structured) ? { title: prompt.title } : {}),
+					description: prompt.description,
+					arguments: prompt.arguments,
+				})),
+			});
+
+		case 'prompts/get': {
+			const name = stringOrUndefined(request.params?.name);
+			const prompt = (ctx.prompts ?? []).find(p => p.name === name);
+			if (!prompt) {
+				return failure(id, errorCodes.invalidParams, `Unknown prompt: ${name ?? '(none)'}`);
+			}
+			const given: Record<string, string> = {};
+			const raw = request.params?.arguments;
+			if (raw && typeof raw === 'object') {
+				for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+					if (typeof value === 'string') {
+						given[key] = value;
+					}
+				}
+			}
+			const missing = prompt.arguments.find(a => a.required && !given[a.name]?.trim());
+			if (missing) {
+				return failure(id, errorCodes.invalidParams, `Missing argument: ${missing.name}`);
+			}
+			try {
+				const text = await prompt.get(given, caller);
+				return result(id, { description: prompt.description, messages: [{ role: 'user', content: { type: 'text', text } }] });
+			} catch (err) {
+				return failure(id, errorCodes.invalidParams, err instanceof Error ? err.message : String(err));
+			}
+		}
 
 		case 'tools/call': {
 			const name = stringOrUndefined(request.params?.name);
@@ -282,8 +432,13 @@ export async function dispatch(
 
 			const args = (request.params?.arguments ?? {}) as Record<string, unknown>;
 			try {
-				const value = await tool.run(args, caller, signal);
-				return result(id, { content: contentOf(value) ?? [{ type: 'text', text: asText(value) }] });
+				const value = await tool.run(args, caller, signal, progress);
+				const content = contentOf(value) ?? [{ type: 'text', text: asText(value) }];
+				const shown = content;
+				// `structuredContent` only from a tool that declared its shape, and only
+				// to a client that can read it; the text block stays for every client.
+				const structured = tool.outputSchema && plainObject(value) && supports(ctx.protocolVersion, protocolFeatures.structured);
+				return result(id, structured ? { content: shown, structuredContent: value } : { content: shown });
 			} catch (err) {
 				return result(id, toolFailure(err instanceof Error ? err.message : String(err)));
 			}
